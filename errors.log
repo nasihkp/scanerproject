@@ -1,0 +1,3 @@
+﻿src/app/components/CameraScanScreen.tsx(65,42): error TS2353: Object literal may only specify known properties, and 'torch' does not exist in type 'MediaTrackConstraintSet'.
+src/app/components/OnboardingScreens.tsx(3,34): error TS6133: 'Share2' is declared but its value is never read.
+src/app/components/SplashScreen.tsx(8,30): error TS6133: 'onComplete' is declared but its value is never read.
