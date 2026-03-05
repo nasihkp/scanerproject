@@ -449,33 +449,62 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                 fCanvas.setActiveObject(rect);
                 dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' });
             } else if (activeTool === 'eraser') {
-                if (opt.target && opt.target.type !== 'image' && !opt.target.isPdfForm) {
-                    // Clicked on a drawn object or text
-                    fCanvas.remove(opt.target);
-                    // The object:removed listener will catch this and save history
-                } else {
-                    // Start pointwise drawing "magic erase"
-                    fCanvas.isDrawingMode = true;
-                    fCanvas.freeDrawingBrush = new fabric.PencilBrush(fCanvas);
-                    fCanvas.freeDrawingBrush.color = '#ffffff';
-                    fCanvas.freeDrawingBrush.width = 25; // Good size for eraser
+                isEraserDrawing = true;
+                const pointer = fCanvas.getPointer(opt.e);
+                eraserStartPointer = { x: pointer.x, y: pointer.y };
 
-                    // Manually trigger the brush's mousedown so it starts drawing right away
-                    const pointer = fCanvas.getPointer(opt.e);
-                    fCanvas.freeDrawingBrush.onMouseDown(pointer, { e: opt.e });
-                    isEraserDrawing = true;
-                }
+                eraserRect = new fabric.Rect({
+                    left: pointer.x,
+                    top: pointer.y,
+                    width: 0,
+                    height: 0,
+                    fill: '#ffffff', // Solid white to cover things up
+                    strokeWidth: 0,
+                    selectable: false,
+                    evented: false, // Make it transparent to clicks so it acts purely as whiteout
+                    id: Math.random().toString(36).substr(2, 9),
+                });
+
+                // Add an explicit property so we know it's an eraser mark
+                eraserRect.set('isEraserMark', true);
+
+                fCanvas.add(eraserRect);
+                fCanvas.renderAll();
             }
         };
 
         const handleMouseMove = (opt: any) => {
-            // Native fabric handles mouse move for free drawing mode automatically.
+            if (activeTool === 'eraser' && isEraserDrawing && eraserRect && eraserStartPointer && opt.e) {
+                const pointer = fCanvas.getPointer(opt.e);
+
+                const x1 = eraserStartPointer.x;
+                const y1 = eraserStartPointer.y;
+                const x2 = pointer.x;
+                const y2 = pointer.y;
+
+                const left = Math.min(x1, x2);
+                const top = Math.min(y1, y2);
+                const width = Math.abs(x1 - x2);
+                const height = Math.abs(y1 - y2);
+
+                eraserRect.set({ left, top, width, height });
+
+                fCanvas.renderAll();
+            }
         };
 
-        const handleMouseUp = (opt: any) => {
-            if (activeTool === 'eraser' && isEraserDrawing) {
+        const handleMouseUp = () => {
+            if (activeTool === 'eraser') {
                 isEraserDrawing = false;
-                fCanvas.isDrawingMode = false;
+                // Only fire object:modified if an eraserRect was actually created and has non-zero dimensions
+                if (eraserRect && (eraserRect.width > 0 || eraserRect.height > 0)) {
+                    fCanvas.fire('object:modified', { target: eraserRect });
+                } else if (eraserRect) {
+                    // If it was a click and no drag, remove the 0-sized rect
+                    fCanvas.remove(eraserRect);
+                }
+                eraserRect = null;
+                eraserStartPointer = null;
             }
         };
 

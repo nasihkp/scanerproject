@@ -229,6 +229,20 @@ function AppContent() {
               }
               setCurrentScreen("pdf-editor");
             }}
+            editedPdfs={editedPdfs}
+            onOpenEditedPdf={(pdf) => {
+              // Convert base64 back to Blob and then File to open in editor
+              fetch(pdf.pdfBase64)
+                .then(res => res.blob())
+                .then(blob => {
+                  const file = new File([blob], pdf.name, { type: 'application/pdf' });
+                  setPdfEditorInitialFile(file);
+                  setCurrentScreen("pdf-editor");
+                });
+            }}
+            onDeleteEditedPdf={(id) => {
+              setEditedPdfs(prev => prev.filter(p => p.id !== id));
+            }}
           />
         )}
 

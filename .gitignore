@@ -3,4 +3,4 @@ dist/
 build/
 android/
 ios/
-
+.env

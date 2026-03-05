@@ -20,7 +20,7 @@ import type { Screen } from "../App";
 import { useAuth } from "../hooks/useAuth";
 import { useGoogleDrive } from "../hooks/useGoogleDrive";
 
-import { ScannedDoc } from "../types/types";
+import { ScannedDoc, EditedPdf } from "../types/types";
 import { generatePDF } from "../utils/pdfGenerator";
 
 interface HomeScreenProps {
@@ -32,6 +32,9 @@ interface HomeScreenProps {
   scannedDocs: ScannedDoc[];
   onUpdateDoc: (id: string, updates: Partial<ScannedDoc>) => void; // New prop to update local doc with driveId
   onOpenPdfEditor: (file?: File) => void;
+  editedPdfs: EditedPdf[];
+  onOpenEditedPdf: (pdf: EditedPdf) => void;
+  onDeleteEditedPdf: (id: string) => void;
 }
 
 export function HomeScreen({
@@ -42,13 +45,16 @@ export function HomeScreen({
   onImportImages,
   scannedDocs,
   onUpdateDoc,
-  onOpenPdfEditor
+  onOpenPdfEditor,
+  editedPdfs,
+  onOpenEditedPdf,
+  onDeleteEditedPdf
 }: HomeScreenProps) {
   const { user, signOut } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const [searchQuery, setSearchQuery] = React.useState("");
-  const [viewMode, setViewMode] = useState<"local" | "cloud">("local");
+  const [viewMode, setViewMode] = useState<"local" | "cloud" | "edited">("local");
   const [showPdfOptions, setShowPdfOptions] = useState(false);
 
   // Drive Hook
@@ -112,7 +118,15 @@ export function HomeScreen({
     doc.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const displayDocs = viewMode === "local" ? filteredLocalDocs : filteredCloudDocs;
+  const filteredEditedPdfs = editedPdfs.filter(pdf =>
+    pdf.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    pdf.date.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  let displayDocs: any[] = [];
+  if (viewMode === "local") displayDocs = filteredLocalDocs;
+  else if (viewMode === "cloud") displayDocs = filteredCloudDocs;
+  else if (viewMode === "edited") displayDocs = filteredEditedPdfs;
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -287,9 +301,15 @@ export function HomeScreen({
           </button>
           <button
             onClick={() => setViewMode("cloud")}
-            className={`pb - 2 px - 1 font - medium text - sm transition ${viewMode === "cloud" ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500 hover:text-gray-700 dark:text-gray-400"} `}
+            className={`pb-2 px-1 font-medium text-sm transition ${viewMode === "cloud" ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500 hover:text-gray-700 dark:text-gray-400"}`}
           >
             Google Drive
+          </button>
+          <button
+            onClick={() => setViewMode("edited")}
+            className={`pb-2 px-1 font-medium text-sm transition ${viewMode === "edited" ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500 hover:text-gray-700 dark:text-gray-400"}`}
+          >
+            Edited PDFs
           </button>
         </div>
 
@@ -299,11 +319,13 @@ export function HomeScreen({
             <div className="flex items-center gap-2">
               {viewMode === "local" ? (
                 <Clock className="w-4 h-4 text-gray-500 dark:text-gray-400" />
-              ) : (
+              ) : viewMode === "cloud" ? (
                 <Cloud className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+              ) : (
+                <FileText className="w-4 h-4 text-gray-500 dark:text-gray-400" />
               )}
               <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-300 uppercase">
-                {viewMode === "local" ? "Recent Scans" : "Cloud Documents"}
+                {viewMode === "local" ? "Recent Scans" : viewMode === "cloud" ? "Cloud Documents" : "Edited PDFs"}
               </h2>
             </div>
             {viewMode === "cloud" && (
@@ -319,7 +341,7 @@ export function HomeScreen({
           {/* EMPTY STATE */}
           {displayDocs.length === 0 ? (
             <div className="bg-white dark:bg-gray-800 border border-dashed border-gray-300 dark:border-gray-700 rounded-xl p-6 text-center text-gray-500 dark:text-gray-400">
-              {viewMode === "local" ? "No local scans found." : driveLoading ? "Loading..." : "No documents in Drive folder."}
+              {viewMode === "local" ? "No local scans found." : viewMode === "cloud" ? (driveLoading ? "Loading..." : "No documents in Drive folder.") : "No edited PDFs found."}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -330,31 +352,39 @@ export function HomeScreen({
                   onClick={() => {
                     if (viewMode === "local") {
                       onView(doc);
-                    } else {
+                    } else if (viewMode === "cloud") {
                       // Open Google Drive viewer
                       if (doc.webViewLink) {
                         window.open(doc.webViewLink, "_blank");
                       } else {
                         alert("Cannot open this document.");
                       }
+                    } else if (viewMode === "edited") {
+                      onOpenEditedPdf(doc as unknown as EditedPdf);
                     }
                   }}
                   className="bg-white dark:bg-gray-800 rounded-xl p-4 flex flex-col gap-3 border border-gray-200 dark:border-gray-700 hover:shadow-lg transition cursor-pointer active:scale-98 relative group"
                 >
                   <div className="relative aspect-[3/4] w-full overflow-hidden rounded-lg bg-gray-100 dark:bg-gray-900 border dark:border-gray-600 flex items-center justify-center">
-                    {/* Thumbnail: Real image for local, Icon for cloud */}
+                    {/* Thumbnail: Real image for local, Icon for cloud/edited */}
                     {viewMode === "local" ? (
                       <img
                         src={doc.pages[0]}
                         alt="Scanned"
                         className="w-full h-full object-cover"
                       />
-                    ) : (
+                    ) : viewMode === "cloud" ? (
                       doc.thumbnailLink ? (
                         <img src={doc.thumbnailLink} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                       ) : (
                         <FileText className="w-12 h-12 text-gray-300" />
                       )
+                    ) : (
+                      // Edited PDF thumbnail placeholder
+                      <div className="w-full h-full bg-blue-50 dark:bg-blue-900/20 flex flex-col items-center justify-center gap-2">
+                        <FileText className="w-12 h-12 text-blue-500" />
+                        <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">{doc.sizeMB}</span>
+                      </div>
                     )}
 
                     <div className="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-between p-3">
@@ -364,9 +394,11 @@ export function HomeScreen({
                           if (confirm("Are you sure you want to delete this document?")) {
                             if (viewMode === "local") {
                               onDelete(doc.id);
-                            } else {
+                            } else if (viewMode === "cloud") {
                               const success = await deleteDocument(doc.id);
                               if (!success) alert("Failed to delete from Drive.");
+                            } else if (viewMode === "edited") {
+                              onDeleteEditedPdf(doc.id);
                             }
                           }
                         }}
@@ -392,10 +424,15 @@ export function HomeScreen({
                             </button>
                           )}
                         </div>
-                      ) : (
+                      ) : viewMode === "cloud" ? (
                         /* Cloud View: Show external link icon */
                         <div title="Open in Google Drive">
                           <Cloud className="w-5 h-5 text-white" />
+                        </div>
+                      ) : (
+                        /* Edited PDF View */
+                        <div title="Open PDF">
+                          <FileText className="w-5 h-5 text-white" />
                         </div>
                       )}
                     </div>
@@ -407,7 +444,7 @@ export function HomeScreen({
                     </h3>
                     <div className="flex items-center gap-2 mt-1">
                       <p className="text-xs text-gray-500 dark:text-gray-400">
-                        {viewMode === "local" ? doc.date : new Date(doc.createdTime).toLocaleDateString()}
+                        {viewMode === "cloud" ? new Date(doc.createdTime).toLocaleDateString() : doc.date}
                       </p>
                       {doc.category && (
                         <span className="text-[10px] bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 px-1.5 py-0.5 rounded">
