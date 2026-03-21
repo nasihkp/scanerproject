@@ -253,7 +253,7 @@ export function HomeScreen({
       {/* Main content */}
       <div className="flex-1 overflow-y-auto px-5 py-6">
         {/* Scan button */}
-        <div className="flex gap-4 mb-6">
+        <div className="flex flex-col sm:flex-row gap-4 mb-6">
           <button
             onClick={onScan}
             className="flex-1 bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-2xl p-6 flex flex-col items-center justify-center gap-3 shadow-lg hover:shadow-xl transition"

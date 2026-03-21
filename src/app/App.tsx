@@ -164,8 +164,8 @@ function AppContent() {
   // Show loading spinner while checking auth
   if (loading && currentScreen === "splash") {
     return (
-      <div className={`${isDarkMode ? "dark bg-gray-900" : "bg-gray-50"} min-h-screen`}>
-        <div className="max-w-[360px] mx-auto min-h-screen bg-white dark:bg-gray-900 shadow-2xl relative overflow-hidden">
+      <div className={`${isDarkMode ? "dark bg-gray-900" : "bg-gray-50"} min-h-screen flex items-center justify-center`}>
+        <div className="w-full max-w-7xl mx-auto min-h-screen sm:min-h-[auto] sm:h-screen bg-white dark:bg-gray-900 shadow-2xl relative overflow-hidden flex flex-col items-center justify-center">
           <SplashScreen onComplete={() => { }} />
         </div>
       </div>

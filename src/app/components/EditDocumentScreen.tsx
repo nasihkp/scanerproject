@@ -219,7 +219,7 @@ export function EditDocumentScreen({
           Back
         </button>
 
-        <div className="flex gap-4">
+        <div className="flex flex-col sm:flex-row gap-4">
           <button
             onClick={() => {
               // Save current state first
@@ -227,7 +227,7 @@ export function EditDocumentScreen({
               newPages[currentIndex] = editedImage;
               onAddPage(newPages);
             }}
-            className="flex items-center gap-1 text-blue-600 dark:text-blue-400 font-semibold"
+            className="flex items-center justify-center gap-1 text-blue-600 dark:text-blue-400 font-semibold"
           >
             <Plus className="w-4 h-4" />
             Add Page
@@ -239,7 +239,7 @@ export function EditDocumentScreen({
               newPages[currentIndex] = editedImage;
               onNext(newPages);
             }}
-            className="text-white font-semibold flex items-center gap-1 bg-blue-600 px-3 py-1 rounded-lg hover:bg-blue-700 transition"
+            className="text-white font-semibold flex items-center justify-center gap-1 bg-blue-600 px-3 py-2 sm:py-1 rounded-lg hover:bg-blue-700 transition"
           >
             Save PDF
           </button>

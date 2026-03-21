@@ -266,7 +266,7 @@ export function SaveShareScreen({
             Quick Actions
           </h3>
 
-          <div className="space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
 
 
             <ActionButton
@@ -289,67 +289,69 @@ export function SaveShareScreen({
               desc="Share via apps"
               onClick={handleShare}
             />
+          </div>
 
-            <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 mt-6 mb-3">
-              Export As
-            </h3>
+          <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 mt-6 mb-3">
+            Export As
+          </h3>
 
-            <div className="grid grid-cols-3 gap-3">
-              <button
-                onClick={async () => {
-                  const { exportToWord } = await import("../utils/converters");
-                  const blob = await exportToWord(images);
-                  const url = URL.createObjectURL(blob);
-                  const link = document.createElement("a");
-                  link.href = url;
-                  link.download = `${fileName}.docx`;
-                  link.click();
-                }}
-                className="flex flex-col items-center justify-center bg-blue-50 dark:bg-blue-900/20 p-3 rounded-xl hover:bg-blue-100 dark:hover:bg-blue-900/40 transition gap-2"
-              >
-                <FileText className="w-6 h-6 text-blue-700 dark:text-blue-400" />
-                <span className="text-xs font-medium text-blue-700 dark:text-blue-400">Word</span>
-              </button>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <button
+              onClick={async () => {
+                const { exportToWord } = await import("../utils/converters");
+                const blob = await exportToWord(images);
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = `${fileName}.docx`;
+                link.click();
+              }}
+              className="flex flex-col items-center justify-center bg-blue-50 dark:bg-blue-900/20 p-3 rounded-xl hover:bg-blue-100 dark:hover:bg-blue-900/40 transition gap-2"
+            >
+              <FileText className="w-6 h-6 text-blue-700 dark:text-blue-400" />
+              <span className="text-xs font-medium text-blue-700 dark:text-blue-400">Word</span>
+            </button>
 
-              <button
-                onClick={async () => {
-                  const { exportToPPT } = await import("../utils/converters");
-                  const blob = await exportToPPT(images);
-                  const url = URL.createObjectURL(blob);
-                  const link = document.createElement("a");
-                  link.href = url;
-                  link.download = `${fileName}.pptx`;
-                  link.click();
-                }}
-                className="flex flex-col items-center justify-center bg-orange-50 dark:bg-orange-900/20 p-3 rounded-xl hover:bg-orange-100 dark:hover:bg-orange-900/40 transition gap-2"
-              >
-                <FileText className="w-6 h-6 text-orange-600 dark:text-orange-400" />
-                <span className="text-xs font-medium text-orange-700 dark:text-orange-400">PowerPoint</span>
-              </button>
+            <button
+              onClick={async () => {
+                const { exportToPPT } = await import("../utils/converters");
+                const blob = await exportToPPT(images);
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = `${fileName}.pptx`;
+                link.click();
+              }}
+              className="flex flex-col items-center justify-center bg-orange-50 dark:bg-orange-900/20 p-3 rounded-xl hover:bg-orange-100 dark:hover:bg-orange-900/40 transition gap-2"
+            >
+              <FileText className="w-6 h-6 text-orange-600 dark:text-orange-400" />
+              <span className="text-xs font-medium text-orange-700 dark:text-orange-400">PowerPoint</span>
+            </button>
 
-              <button
-                onClick={async () => {
-                  if (!scannedText) {
-                    alert("No text detected for Excel export. Please ensure the document has readable text.");
-                    return;
-                  }
-                  const { exportToExcel } = await import("../utils/converters");
-                  const blob = exportToExcel(scannedText);
-                  const url = URL.createObjectURL(blob);
-                  const link = document.createElement("a");
-                  link.href = url;
-                  link.download = `${fileName}.xlsx`;
-                  link.click();
-                }}
-                className="flex flex-col items-center justify-center bg-green-50 dark:bg-green-900/20 p-3 rounded-xl hover:bg-green-100 dark:hover:bg-green-900/40 transition gap-2"
-              >
-                <FileText className="w-6 h-6 text-green-700 dark:text-green-400" />
-                <span className="text-xs font-medium text-green-700 dark:text-green-400">Excel</span>
-              </button>
-            </div>
+            <button
+              onClick={async () => {
+                if (!scannedText) {
+                  alert("No text detected for Excel export. Please ensure the document has readable text.");
+                  return;
+                }
+                const { exportToExcel } = await import("../utils/converters");
+                const blob = exportToExcel(scannedText);
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = `${fileName}.xlsx`;
+                link.click();
+              }}
+              className="flex flex-col items-center justify-center bg-green-50 dark:bg-green-900/20 p-3 rounded-xl hover:bg-green-100 dark:hover:bg-green-900/40 transition gap-2"
+            >
+              <FileText className="w-6 h-6 text-green-700 dark:text-green-400" />
+              <span className="text-xs font-medium text-green-700 dark:text-green-400">Excel</span>
+            </button>
+          </div>
 
-            <div className="h-4" /> {/* Spacer */}
+          <div className="h-4" /> {/* Spacer */}
 
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
             <ActionButton
               icon={<Printer className="text-purple-600 dark:text-purple-400" />}
               title="Print Document"

@@ -4,8 +4,12 @@ import { PdfPageRenderer } from './PdfPageRenderer';
 import { CreationMode } from './CreationMode';
 import { createBlankPdf } from './pdfUtils';
 
-// We put pdfjsLib in an ambient declaration since it's from CDN
-declare var pdfjsLib: any;
+// @ts-ignore
+import * as pdfjsLib from 'pdfjs-dist/build/pdf';
+// @ts-ignore
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker?url';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 interface CenterCanvasProps {
     state: PdfEditorState;
@@ -14,33 +18,52 @@ interface CenterCanvasProps {
 
 export const CenterCanvas: React.FC<CenterCanvasProps> = ({ state, dispatch }) => {
     const [pdfDoc, setPdfDoc] = useState<any>(null);
+    const [numPages, setNumPages] = useState<number>(0);
+    const [isLoading, setIsLoading] = useState<boolean>(false);
 
     const lastProcessedFileRef = React.useRef<File | null>(null);
 
     React.useEffect(() => {
         if (state.document?.file && state.document.file !== lastProcessedFileRef.current) {
+            const fileToProcess = state.document.file;
+            lastProcessedFileRef.current = fileToProcess;
+
             const processNewFile = async () => {
                 try {
-                    const arrayBuffer = await state.document!.file!.arrayBuffer();
+                    // Reset pages on new file
+                    setPdfDoc(null);
+                    setNumPages(0);
+                    setIsLoading(true);
+
+                    const arrayBuffer = await fileToProcess.arrayBuffer();
                     const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
                     const loadedPdf = await loadingTask.promise;
                     setPdfDoc(loadedPdf);
-                    lastProcessedFileRef.current = state.document!.file!;
+                    setNumPages(loadedPdf.numPages);
 
-                    if (loadedPdf.numPages !== state.document!.numPages) {
-                        dispatch({
-                            type: 'SET_DOCUMENT',
-                            payload: {
-                                ...state.document!,
-                                numPages: loadedPdf.numPages,
-                            },
-                        });
-                    }
+                    // Also update global state with page count
+                    dispatch({
+                        type: 'SET_DOCUMENT',
+                        payload: {
+                            file: fileToProcess,
+                            numPages: loadedPdf.numPages,
+                            fileName: fileToProcess.name,
+                            fileSize: fileToProcess.size,
+                        },
+                    });
                 } catch (err) {
                     console.error("Error loading PDF from state change:", err);
+                } finally {
+                    setIsLoading(false);
                 }
             };
             processNewFile();
+        } else if (!state.document?.file) {
+            // Document cleared
+            setPdfDoc(null);
+            setNumPages(0);
+            setIsLoading(false);
+            lastProcessedFileRef.current = null;
         }
     }, [state.document?.file, dispatch]);
 
@@ -73,18 +96,25 @@ export const CenterCanvas: React.FC<CenterCanvasProps> = ({ state, dispatch }) =
             });
         } catch (err) {
             console.error("Error creating blank PDF:", err);
-            alert("Failed to create blank PDF. Is pdf-lib loaded?");
+            alert("Failed to create blank PDF. Please try again.");
         }
     };
 
     return (
         <div className="flex-1 bg-[#2a2a2a] overflow-auto flex items-start justify-center relative shadow-inner p-4 pb-24 md:p-8">
-            {/* Grid Overlay Placeholder */}
-            <div className="absolute inset-0 pattern-grid opacity-5 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle, white 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
+            {/* Grid Overlay */}
+            <div className="absolute inset-0 opacity-5 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle, white 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
 
-            {state.document && pdfDoc ? (
-                <div className="flex flex-col items-center w-full min-h-full" style={{ transform: `scale(1)`, transformOrigin: 'top center' }}>
-                    {Array.from({ length: state.document.numPages }).map((_, i) => (
+            {isLoading ? (
+                <div className="flex items-center justify-center h-full w-full absolute inset-0">
+                    <div className="text-white/40 text-sm flex flex-col items-center gap-3">
+                        <div className="animate-spin w-8 h-8 border-2 border-white/20 border-t-white/60 rounded-full" />
+                        <span>Loading PDF...</span>
+                    </div>
+                </div>
+            ) : pdfDoc && numPages > 0 ? (
+                <div className="flex flex-col items-center w-full min-h-full" style={{ transformOrigin: 'top center' }}>
+                    {Array.from({ length: numPages }).map((_, i) => (
                         <PdfPageRenderer
                             key={i + 1}
                             pdfDoc={pdfDoc}

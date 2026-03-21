@@ -5,7 +5,7 @@ import { TopBar } from './TopBar';
 import { CenterCanvas } from './CenterCanvas';
 import { PageThumbnailPanel } from './PageThumbnailPanel';
 import { BottomToolbar } from './BottomToolbar';
-import { PdfEditorState, pdfEditorReducer, initialState } from './PdfEditorState';
+import { pdfEditorReducer, initialState } from './PdfEditorState';
 
 interface PdfEditorProps {
     onClose: () => void;

@@ -1,0 +1,37 @@
+﻿src/app/App.tsx(463,36): error TS2339: Property 'name' does not exist on type 'ScannedDoc'.
+src/app/App.tsx(463,50): error TS2339: Property 'name' does not exist on type 'ScannedDoc'.
+src/app/App.tsx(491,38): error TS2322: Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'BlobPart'.
+  Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'ArrayBufferView<ArrayBuffer>'.
+    Types of property 'buffer' are incompatible.
+      Type 'ArrayBufferLike' is not assignable to type 'ArrayBuffer'.
+        Type 'SharedArrayBuffer' is not assignable to type 'ArrayBuffer'.
+          Types of property '[Symbol.toStringTag]' are incompatible.
+            Type '"SharedArrayBuffer"' is not assignable to type '"ArrayBuffer"'.
+src/app/types/types.ts(49,3): error TS2300: Duplicate identifier 'driveId'.
+src/app/types/types.ts(50,3): error TS2300: Duplicate identifier 'driveId'.
+src/app/utils/edgeDetection.ts(52,19): error TS6133: 'sobelData' is declared but its value is never read.
+src/app/utils/pdfGenerator.ts(26,16): error TS2339: Property 'encrypt' does not exist on type 'PDFDocument'.
+src/app/utils/pdfGenerator.ts(40,32): error TS2322: Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'BlobPart'.
+  Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'ArrayBufferView<ArrayBuffer>'.
+    Types of property 'buffer' are incompatible.
+      Type 'ArrayBufferLike' is not assignable to type 'ArrayBuffer'.
+        Type 'SharedArrayBuffer' is not assignable to type 'ArrayBuffer'.
+          Types of property '[Symbol.toStringTag]' are incompatible.
+            Type '"SharedArrayBuffer"' is not assignable to type '"ArrayBuffer"'.
+src/components/PdfEditor/BottomToolbar.tsx(30,34): error TS2345: Argument of type '"pan"' is not assignable to parameter of type 'ToolName'.
+src/components/PdfEditor/CenterCanvas.tsx(7,27): error TS7016: Could not find a declaration file for module 'pdfjs-dist/build/pdf'. 'C:/Users/nasih/scanmain/node_modules/pdfjs-dist/build/pdf.js' implicitly has an 'any' type.
+  Try `npm i --save-dev @types/pdfjs-dist` if it exists or add a new declaration (.d.ts) file containing `declare module 'pdfjs-dist/build/pdf';`
+src/components/PdfEditor/PdfEditor.tsx(8,10): error TS6133: 'PdfEditorState' is declared but its value is never read.
+src/components/PdfEditor/PdfPageRenderer.tsx(7,28): error TS7016: Could not find a declaration file for module 'pdfjs-dist/build/pdf'. 'C:/Users/nasih/scanmain/node_modules/pdfjs-dist/build/pdf.js' implicitly has an 'any' type.
+  Try `npm i --save-dev @types/pdfjs-dist` if it exists or add a new declaration (.d.ts) file containing `declare module 'pdfjs-dist/build/pdf';`
+src/components/PdfEditor/PdfPageRenderer.tsx(37,12): error TS6133: 'pdfType' is declared but its value is never read.
+src/components/PdfEditor/PdfPageRenderer.tsx(94,82): error TS6133: 'options' is declared but its value is never read.
+src/components/PdfEditor/pdfUtils.ts(258,10): error TS6133: 'hexToRgb' is declared but its value is never read.
+src/components/PdfEditor/TopBar.tsx(4,42): error TS6133: 'Download' is declared but its value is never read.
+src/components/PdfEditor/TopBar.tsx(35,40): error TS2322: Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'BlobPart'.
+  Type 'Uint8Array<ArrayBufferLike>' is not assignable to type 'ArrayBufferView<ArrayBuffer>'.
+    Types of property 'buffer' are incompatible.
+      Type 'ArrayBufferLike' is not assignable to type 'ArrayBuffer'.
+        Type 'SharedArrayBuffer' is not assignable to type 'ArrayBuffer'.
+          Types of property '[Symbol.toStringTag]' are incompatible.
+            Type '"SharedArrayBuffer"' is not assignable to type '"ArrayBuffer"'.

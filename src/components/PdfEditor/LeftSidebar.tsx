@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import {
-    MousePointer2, Hand, ZoomIn, FilePlus, Copy, Trash2,
+    MousePointer2,
     Type, PenTool, Highlighter, Eraser, Square, Circle,
     MessageSquare, Image as ImageIcon, PenLine, Stamp,
-    FormInput, EyeOff, LayoutTemplate, Link as LinkIcon,
-    Lock, FileArchive, ChevronDown, ChevronRight
+    FormInput, ChevronDown
+
 } from 'lucide-react';
 import { PdfEditorState, Action, ToolName } from './PdfEditorState';
 
@@ -75,7 +75,6 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({ state, dispatch }) => 
             {renderSection("select", "Select & Navigate", (
                 <>
                     {renderToolButton(MousePointer2, "Select", "select", state.activeTool === 'select')}
-                    {renderToolButton(Hand, "Pan", "pan", state.activeTool === 'pan')}
                 </>
             ))}
 
@@ -117,11 +116,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({ state, dispatch }) => 
                 </>
             ))}
 
-            {renderSection("security", "Security", (
-                <>
-                    {renderToolButton(EyeOff, "Redact Text", "redact", state.activeTool === 'redact')}
-                </>
-            ))}
+
         </div>
     );
 };

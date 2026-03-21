@@ -1,9 +1,9 @@
 export type ToolName =
-  | 'select' | 'pan' | 'zoom'
+  | 'select' | 'zoom'
   | 'add_text' | 'pen' | 'highlighter' | 'eraser'
   | 'line' | 'arrow' | 'rectangle' | 'circle' | 'polygon'
   | 'sticky_note' | 'comment' | 'image' | 'signature' | 'stamp'
-  | 'form_text' | 'form_checkbox' | 'form_radio' | 'redact'
+  | 'form_text' | 'form_checkbox' | 'form_radio'
   | 'watermark' | 'link';
 
 export interface ViewportState {

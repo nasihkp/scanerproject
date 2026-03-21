@@ -5,6 +5,7 @@ import { fabricCanvasRegistry } from './pdfUtils';
 // We put fabric in an ambient declaration since it's from CDN
 declare var fabric: any;
 
+
 interface PdfPageRendererProps {
     pdfDoc: any; // Using any for pdfjsLib document
     pageNum: number;
@@ -66,18 +67,91 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                         width: viewport.width,
                         height: viewport.height,
                         selection: true,
+                        backgroundColor: '#ffffff',
                     });
                     fabricCanvasRef.current = fabricCanvas;
 
                     // Register canvas to global registry
                     fabricCanvasRegistry[pageNum] = fabricCanvas;
 
-                    // Set background
+                    // Set rendered PDF page as the fabric canvas background image
                     const bgImage = new fabric.Image(offscreenCanvas);
-                    fabricCanvas.setBackgroundImage(bgImage, () => {
+                    fabricCanvas.setBackgroundImage(bgImage, async () => {
                         fabricCanvas.renderAll();
-                        // Record the base empty state for undo-to-start
-                        pristineStateJSON.current = fabricCanvas.toJSON(['id', 'isPdfForm', 'formType', 'isRedaction']);
+
+                        // ── Extract PDF text objects and create selectable overlays ──
+                        try {
+                            const textContent = await page.getTextContent();
+                            (textContent.items as any[]).forEach((item: any) => {
+                                if (!item.str || !item.str.trim()) return;
+
+                                // Convert PDF coords (bottom-left origin) to canvas coords (top-left origin)
+                                const [cx, cy] = viewport.convertToViewportPoint(
+                                    item.transform[4],
+                                    item.transform[5]
+                                );
+
+                                // Font height: use item.height (PDF units) × scale, fallback to transform scaleY
+                                const fontH = Math.max(
+                                    (item.height ? item.height : Math.abs(item.transform[3])) * scale,
+                                    6
+                                );
+
+                                // cy is the baseline; top of glyph box is cy - fontH
+                                const textTop = cy - fontH;
+
+                                const overlayId = `txt_${Math.random().toString(36).substr(2, 9)}`;
+                                const textOverlay = new fabric.IText(item.str, {
+                                    left: cx,
+                                    top: textTop,
+                                    fontSize: fontH * 1.1,
+                                    fontFamily: 'sans-serif',
+                                    fill: 'rgba(0,0,0,0)', // Invisible initially so original PDF text shows through
+                                    backgroundColor: 'rgba(59,130,246,0)',
+                                    selectable: true,
+                                    evented: true,
+                                    id: overlayId,
+                                    transparentCorners: false,
+                                    cornerSize: 5,
+                                    borderColor: '#3b82f6',
+                                    cornerColor: '#3b82f6',
+                                    cornerStrokeColor: '#3b82f6',
+                                    cursorColor: '#000000',
+                                });
+                                // Custom PDF metadata (preserved in toJSON serialization)
+                                (textOverlay as any).isOriginalText = true;
+                                (textOverlay as any).originalStr = item.str;
+                                fabricCanvas.add(textOverlay);
+                            });
+                            fabricCanvas.renderAll();
+                        } catch (textErr) {
+                            console.warn('Text extraction failed:', textErr);
+                        }
+
+                        // Capture pristine state AFTER text overlays are added
+                        pristineStateJSON.current = fabricCanvas.toJSON(
+                            ['id', 'isPdfForm', 'formType', 'isRedaction', 'isOriginalText', 'isOriginalTextCover', 'originalStr', 'isEdited']
+                        );
+                    });
+
+                    // ── Hover highlights on PDF text objects ──
+                    fabricCanvas.on('mouse:over', (e: any) => {
+                        if (e.target && (e.target as any).isOriginalText) {
+                            if (!(e.target as any).isEdited) {
+                                e.target.set({ backgroundColor: 'rgba(59,130,246,0.12)' });
+                                fabricCanvas.renderAll();
+                            }
+                        }
+                    });
+                    fabricCanvas.on('mouse:out', (e: any) => {
+                        const obj = e.target;
+                        if (obj && (obj as any).isOriginalText) {
+                            const isSelected = fabricCanvas.getActiveObjects().includes(obj);
+                            if (!isSelected && !(obj as any).isEdited) {
+                                obj.set({ backgroundColor: 'rgba(0,0,0,0)' });
+                                fabricCanvas.renderAll();
+                            }
+                        }
                     });
 
                     // Selection event
@@ -85,6 +159,11 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                         if (e.selected && e.selected.length === 1) {
                             const obj = e.selected[0];
                             if (!obj.id) obj.id = Math.random().toString(36).substr(2, 9);
+                            // Show selection highlight on PDF text objects
+                            if ((obj as any).isOriginalText && !(obj as any).isEdited) {
+                                obj.set({ backgroundColor: 'rgba(59,130,246,0.2)' });
+                                fabricCanvas.renderAll();
+                            }
                             dispatch({
                                 type: 'SET_SELECTED_ELEMENT',
                                 payload: {
@@ -106,8 +185,61 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                             dispatch({ type: 'SET_SELECTED_ELEMENT', payload: { id: null } });
                         }
                     });
-                    fabricCanvas.on('selection:cleared', () => {
+                    fabricCanvas.on('selection:updated', (e: any) => {
+                        // Deselected objects: reset highlight
+                        (e.deselected || []).forEach((obj: any) => {
+                            if (obj.isOriginalText && !obj.isEdited) {
+                                obj.set({ backgroundColor: 'rgba(0,0,0,0)' });
+                            }
+                        });
+                        fabricCanvas.renderAll();
+                    });
+                    fabricCanvas.on('selection:cleared', (e: any) => {
+                        // Reset highlight on all deselected text objects
+                        (e.deselected || []).forEach((obj: any) => {
+                            if (obj.isOriginalText && !obj.isEdited) {
+                                obj.set({ backgroundColor: 'rgba(0,0,0,0)' });
+                            }
+                        });
+                        fabricCanvas.renderAll();
                         dispatch({ type: 'SET_SELECTED_ELEMENT', payload: { id: null } });
+                    });
+
+                    // ── Inline Editing Entry ──
+                    fabricCanvas.on('text:editing:entered', (e: any) => {
+                        const obj = e.target;
+                        if (obj && obj.isOriginalText && !obj.isEdited) {
+                            // Spawn white cover underneath to hide original PDF text
+                            const cover = new fabric.Rect({
+                                left: obj.left,
+                                top: obj.top,
+                                width: obj.width * (obj.scaleX || 1),
+                                height: obj.height * (obj.scaleY || 1),
+                                fill: '#ffffff',
+                                stroke: 'none',
+                                selectable: false,
+                                evented: false,
+                                id: `cover_${Math.random().toString(36).substr(2, 9)}`,
+                            });
+                            (cover as any).isOriginalTextCover = true;
+                            
+                            // Send cover to back, but make sure canvas background stays absolute back
+                            fabricCanvas.add(cover);
+                            cover.sendToBack();
+
+                            // Make text visible and clear background hover highlight
+                            obj.set({ 
+                                fill: '#000000', 
+                                backgroundColor: 'rgba(0,0,0,0)',
+                                isEdited: true 
+                            });
+                            
+                            fabricCanvas.renderAll();
+
+                            // Trigger history save
+                            const json = fabricCanvas.toJSON(['id', 'isPdfForm', 'formType', 'isRedaction', 'isOriginalText', 'isOriginalTextCover', 'originalStr', 'isEdited']);
+                            dispatch({ type: 'SAVE_HISTORY', payload: { pageNum, json } });
+                        }
                     });
                 } else {
                     // If already exists, just update dimensions and background
@@ -164,7 +296,7 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
             }
 
             // Debounce or dispatch immediately
-            const json = fCanvas.toJSON(['id', 'isPdfForm', 'formType', 'isRedaction']);
+            const json = fCanvas.toJSON(['id', 'isPdfForm', 'formType', 'isRedaction', 'isOriginalText', 'isOriginalTextCover', 'originalStr', 'isEdited']);
             dispatch({
                 type: 'SAVE_HISTORY',
                 payload: { pageNum, json }
@@ -248,11 +380,12 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                 fCanvas.freeDrawingBrush.width = 15;
                 break;
             case 'eraser':
-                fCanvas.selection = false;
+                fCanvas.isDrawingMode = true;
+                fCanvas.freeDrawingBrush = new fabric.PencilBrush(fCanvas);
+                fCanvas.freeDrawingBrush.color = '#ffffff';
+                fCanvas.freeDrawingBrush.width = 20;
+                fCanvas.selection = true;
                 fCanvas.defaultCursor = 'crosshair';
-                fCanvas.forEachObject((obj: any) => {
-                    obj.selectable = true;
-                });
                 break;
             case 'add_text':
             case 'rectangle':
@@ -263,34 +396,107 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
             case 'form_text':
             case 'form_checkbox':
             case 'form_radio':
-            case 'redact':
-                fCanvas.selection = false;
-                fCanvas.defaultCursor = 'crosshair';
-                fCanvas.forEachObject((obj: any) => {
-                    obj.selectable = false;
-                });
-                break;
-            case 'pan':
-                fCanvas.selection = false;
-                fCanvas.defaultCursor = 'grab';
-                fCanvas.forEachObject((obj: any) => {
-                    obj.selectable = false;
-                    obj.evented = false;
-                });
-                break;
             default:
                 break;
         }
     }, [activeTool]);
+
+    // Handle Keyboard Shortcuts (Delete/Backspace)
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            const fCanvas = fabricCanvasRef.current;
+            if (!fCanvas) return;
+
+            // Only proceed if not editing an IText/Textbox
+            const activeObject = fCanvas.getActiveObject();
+            if (activeObject && activeObject.isEditing) return;
+
+            if (e.key === 'Delete' || e.key === 'Backspace') {
+                const selectedObjects = fCanvas.getActiveObjects();
+                if (selectedObjects.length > 0) {
+                    fCanvas.discardActiveObject();
+                    selectedObjects.forEach((obj: any) => {
+                        if (obj.isOriginalText) {
+                            // Create a white cover to physically erase this text in the saved PDF
+                            const cover = new fabric.Rect({
+                                left: obj.left,
+                                top: obj.top,
+                                width: obj.width * (obj.scaleX || 1),
+                                height: obj.height * (obj.scaleY || 1),
+                                fill: '#ffffff',
+                                stroke: 'none',
+                                selectable: false,
+                                evented: false,
+                                id: `cover_${Math.random().toString(36).substr(2, 9)}`,
+                            });
+                            (cover as any).isOriginalTextCover = true;
+                            fCanvas.add(cover);
+                        }
+                        fCanvas.remove(obj);
+                    });
+                    fCanvas.requestRenderAll();
+
+                    // Trigger history save
+                    const json = fCanvas.toJSON(['id', 'isPdfForm', 'formType', 'isRedaction', 'isOriginalText', 'isOriginalTextCover', 'originalStr', 'isEdited']);
+                    dispatch({
+                        type: 'SAVE_HISTORY',
+                        payload: { pageNum, json }
+                    });
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [dispatch, pageNum]);
 
     // Handle clicks and drags based on tools
     useEffect(() => {
         const fCanvas = fabricCanvasRef.current;
         if (!fCanvas) return;
 
-        let isEraserDrawing = false;
 
         const handleMouseDown = (opt: any) => {
+            if (activeTool === 'eraser' && opt.target) {
+                const erasedObj = opt.target;
+
+                // If erasing a PDF text object, leave a white cover behind
+                if ((erasedObj as any).isOriginalText) {
+                    const cover = new fabric.Rect({
+                        left: erasedObj.left,
+                        top: erasedObj.top,
+                        width: erasedObj.width * (erasedObj.scaleX || 1),
+                        height: erasedObj.height * (erasedObj.scaleY || 1),
+                        fill: '#ffffff',
+                        stroke: 'none',
+                        selectable: false,
+                        evented: false,
+                        id: `cover_${Math.random().toString(36).substr(2, 9)}`,
+                    });
+                    (cover as any).isOriginalTextCover = true;
+                    fCanvas.add(cover);
+                }
+
+                // Remove from multiple selection if it was part of one
+                const activeObjects = fCanvas.getActiveObjects();
+                if (activeObjects.includes(erasedObj)) {
+                    fCanvas.discardActiveObject();
+                }
+                fCanvas.remove(erasedObj);
+
+                // Trigger history save
+                const json = fCanvas.toJSON(['id', 'isPdfForm', 'formType', 'isRedaction', 'isOriginalText', 'isOriginalTextCover', 'originalStr', 'isEdited']);
+                dispatch({
+                    type: 'SAVE_HISTORY',
+                    payload: { pageNum, json }
+                });
+
+                // Stop the freehand path from starting if we explicitly clicked an object
+                fCanvas.isDrawingMode = false;
+                setTimeout(() => { if (activeTool === 'eraser') fCanvas.isDrawingMode = true; }, 100);
+                return;
+            }
+
             if (activeTool === 'add_text' && !opt.target) {
                 const pointer = fCanvas.getPointer(opt.e);
                 const iText = new fabric.IText('Text', {
@@ -434,90 +640,38 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                 fCanvas.add(circle);
                 fCanvas.setActiveObject(circle);
                 dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' });
-            } else if (activeTool === 'redact' && !opt.target) {
-                const pointer = fCanvas.getPointer(opt.e);
-                const rect = new fabric.Rect({
-                    left: pointer.x,
-                    top: pointer.y,
-                    fill: '#000000',
-                    width: 100,
-                    height: 20,
-                    id: Math.random().toString(36).substr(2, 9),
-                });
-                rect.set('isRedaction', true);
-                fCanvas.add(rect);
-                fCanvas.setActiveObject(rect);
-                dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' });
-            } else if (activeTool === 'eraser') {
-                isEraserDrawing = true;
-                const pointer = fCanvas.getPointer(opt.e);
-                eraserStartPointer = { x: pointer.x, y: pointer.y };
-
-                eraserRect = new fabric.Rect({
-                    left: pointer.x,
-                    top: pointer.y,
-                    width: 0,
-                    height: 0,
-                    fill: '#ffffff', // Solid white to cover things up
-                    strokeWidth: 0,
-                    selectable: false,
-                    evented: false, // Make it transparent to clicks so it acts purely as whiteout
-                    id: Math.random().toString(36).substr(2, 9),
-                });
-
-                // Add an explicit property so we know it's an eraser mark
-                eraserRect.set('isEraserMark', true);
-
-                fCanvas.add(eraserRect);
-                fCanvas.renderAll();
             }
         };
 
-        const handleMouseMove = (opt: any) => {
-            if (activeTool === 'eraser' && isEraserDrawing && eraserRect && eraserStartPointer && opt.e) {
-                const pointer = fCanvas.getPointer(opt.e);
-
-                const x1 = eraserStartPointer.x;
-                const y1 = eraserStartPointer.y;
-                const x2 = pointer.x;
-                const y2 = pointer.y;
-
-                const left = Math.min(x1, x2);
-                const top = Math.min(y1, y2);
-                const width = Math.abs(x1 - x2);
-                const height = Math.abs(y1 - y2);
-
-                eraserRect.set({ left, top, width, height });
-
-                fCanvas.renderAll();
-            }
+        const handleMouseMove = () => {
         };
 
         const handleMouseUp = () => {
+        };
+
+        const handlePathCreated = (e: any) => {
             if (activeTool === 'eraser') {
-                isEraserDrawing = false;
-                // Only fire object:modified if an eraserRect was actually created and has non-zero dimensions
-                if (eraserRect && (eraserRect.width > 0 || eraserRect.height > 0)) {
-                    fCanvas.fire('object:modified', { target: eraserRect });
-                } else if (eraserRect) {
-                    // If it was a click and no drag, remove the 0-sized rect
-                    fCanvas.remove(eraserRect);
-                }
-                eraserRect = null;
-                eraserStartPointer = null;
+                const path = e.path;
+                path.set({
+                    id: Math.random().toString(36).substr(2, 9),
+                    isRedaction: true,
+                });
+                // History is automatically saved via object:added listener
             }
         };
 
         fCanvas.on('mouse:down', handleMouseDown);
         fCanvas.on('mouse:move', handleMouseMove);
         fCanvas.on('mouse:up', handleMouseUp);
+        fCanvas.on('path:created', handlePathCreated);
 
         return () => {
             fCanvas.off('mouse:down', handleMouseDown);
             fCanvas.off('mouse:move', handleMouseMove);
             fCanvas.off('mouse:up', handleMouseUp);
+            fCanvas.off('path:created', handlePathCreated);
         };
-    }, [activeTool, dispatch]);
+    }, [activeTool, dispatch, pageNum]);
 
     // Listen for global property changes
     useEffect(() => {

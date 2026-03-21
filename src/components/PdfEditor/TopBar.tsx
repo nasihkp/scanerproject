@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
     ArrowLeft, Undo, Redo, ZoomIn, ZoomOut,
-    PanelLeft, Monitor, Moon, Sun, Save, Download, Lock
+    PanelLeft, Monitor, Moon, Sun, Save, Lock
 } from 'lucide-react';
 import { PdfEditorState, Action } from './PdfEditorState';
 import { saveEditedPdf } from './pdfUtils';
@@ -22,20 +22,22 @@ export const TopBar: React.FC<TopBarProps> = ({ state, dispatch, onClose, onSave
         if (!state.document?.file) return;
         setIsSaving(true);
         try {
-            const pdfBytes = await saveEditedPdf(state.document.file);
+            const { pdfBytes, base64Pngs, metadata } = await saveEditedPdf(state.document.file, state.document.password);
             const fileName = state.document.fileName || 'Untitled Document.pdf';
 
+            // Log requested data for the user/system
+            console.log("Protected Document Metadata:", metadata);
+            console.log("Protected Document Base64 PNGs:", base64Pngs);
+
             if (onSave) {
-                // Return to parent component instead of forcing browser download
                 onSave(pdfBytes, fileName);
             } else {
-                // Fallback browser download behavior
-                const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+                const blob = new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
                 const url = URL.createObjectURL(blob);
 
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `Edited_${fileName}`;
+                a.download = `Protected_${fileName}`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);

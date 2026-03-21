@@ -199,7 +199,7 @@ export function PDFPreviewScreen({
           )}
         </div>
 
-        <div className="flex gap-3">
+        <div className="flex flex-col sm:flex-row gap-3">
           <button
             onClick={() =>
               onSave(fileName, pages.map((p) => p.image), isPasswordProtected ? password : undefined)
