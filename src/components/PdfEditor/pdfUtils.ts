@@ -1,4 +1,6 @@
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { rgb, PDFDocument, StandardFonts, PDFPage } from 'pdf-lib';
+// State types imported as needed from PdfEditorState
+
 
 // We put fabric in an ambient declaration since it's from CDN
 declare var fabric: any;
@@ -47,7 +49,67 @@ export const duplicatePageInPdf = async (file: File, pageIndex: number): Promise
 };
 
 export const saveEditedPdf = async (file: File, password?: string): Promise<{ pdfBytes: Uint8Array, base64Pngs: string[], metadata: any }> => {
-    const arrayBuffer = await file.arrayBuffer();
+    // Read file once into a Uint8Array – make separate copies for each consumer
+    // to avoid "detached ArrayBuffer" errors when mupdf transfers ownership.
+    const originalBytes = new Uint8Array(await file.arrayBuffer());
+    let arrayBuffer: ArrayBuffer = originalBytes.buffer as ArrayBuffer;
+
+    // --- PRE-PROCESS: True Text Redaction via MuPDF WASM ---
+    const redactionOps: any[] = [];
+    const keys = Object.keys(fabricCanvasRegistry);
+    for (const key of keys) {
+        const pageIdx = parseInt(key) - 1; // 0-indexed for MuPDF
+        const fCanvas = fabricCanvasRegistry[key as any];
+        if (fCanvas) {
+            const covers = fCanvas.getObjects().filter((o: any) => o.isOriginalTextCover);
+            if (covers.length > 0) {
+                const rects = covers.map((c: any) => ({
+                    left: c.left,
+                    top: c.top,
+                    width: c.width * (c.scaleX || 1),
+                    height: c.height * (c.scaleY || 1)
+                }));
+                redactionOps.push({ page: pageIdx, rects });
+            }
+        }
+    }
+
+    let mupdfSuccess = false;
+    if (redactionOps.length > 0) {
+        try {
+            console.log("Applying native WASM redaction via MuPDF...");
+            const mupdf = await import('mupdf');
+            const mupdfBytes = new Uint8Array(originalBytes); // fresh copy for mupdf
+            const mupdfDoc = mupdf.Document.openDocument(mupdfBytes, "application/pdf") as any;
+            
+            for (const op of redactionOps) {
+                const page = mupdfDoc.loadPage(op.page) as any;
+                for (const r of op.rects) {
+                    const annot = page.createAnnotation("Redact");
+                    annot.setRect([r.left, r.top, r.left + r.width, r.top + r.height]);
+                }
+                
+                // applyRedactions(black_boxes, image_method, line_art_method, text_method)
+                // Use generic enum values if TS complains about dynamic import types
+                // REDACT_IMAGE_NONE = 0, REDACT_LINE_ART_NONE = 0, REDACT_TEXT_REMOVE = 0
+                page.applyRedactions(
+                    false, // No black boxes
+                    0,     // Preserve images
+                    0,     // Preserve vectors
+                    0      // Remove text
+                );
+            }
+            
+            const outBuffer = mupdfDoc.saveToBuffer();
+            arrayBuffer = outBuffer.buffer as ArrayBuffer;
+            mupdfSuccess = true;
+            console.log("MuPDF true text deletion successful.");
+        } catch (err) {
+            console.warn("MuPDF native redaction failed. Falling back to frontend whiteout covers.", err);
+        }
+    }
+    // --------------------------------------------------------
+
     const pdfDoc = await PDFDocument.load(arrayBuffer);
     const pageCount = pdfDoc.getPageCount();
     const base64Pngs: string[] = [];
@@ -101,6 +163,9 @@ export const saveEditedPdf = async (file: File, password?: string): Promise<{ pd
                 // STRATEGY 1: Vector/Text PDF (Direct Object Modification + Transparent Overlay)
                 // 1. Draw opaque whiteouts directly on top of original vector content for both redactions AND text covers
                 rawObjs.forEach((obj: any) => {
+                    // Skip redacting covers if MuPDF already successfully removed the text natively
+                    if (obj.isOriginalTextCover && mupdfSuccess) return;
+
                     if (obj.isRedaction || obj.isOriginalTextCover) {
                         try {
                             page.drawRectangle({

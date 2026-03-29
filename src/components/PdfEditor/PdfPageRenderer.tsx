@@ -8,6 +8,7 @@ declare var fabric: any;
 
 interface PdfPageRendererProps {
     pdfDoc: any; // Using any for pdfjsLib document
+    bgPdfDoc?: any; // Textless pdfjsLib document
     pageNum: number;
     scale: number;
     activeTool: ToolName;
@@ -20,6 +21,7 @@ interface PdfPageRendererProps {
 
 export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
     pdfDoc,
+    bgPdfDoc,
     pageNum,
     scale,
     activeTool,
@@ -32,6 +34,12 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasElementRef = useRef<HTMLCanvasElement>(null);
     const fabricCanvasRef = useRef<any>(null);
+    
+    // Use refs for offscreen canvases so that the fabric event listeners (which are set once)
+    // always point to the most recent rendered content.
+    const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+    const offscreenTextlessCanvasRef = useRef<HTMLCanvasElement | null>(null);
+    
     const isHistoryOperation = useRef<boolean>(false);
     const pristineStateJSON = useRef<any>(null);
 
@@ -44,22 +52,43 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
             const page = await pdfDoc.getPage(pageNum);
             const viewport = page.getViewport({ scale });
 
-            // Render PDF to offscreen canvas
-            const offscreenCanvas = document.createElement('canvas');
+            // Initialize offscreen canvases if they don't exist
+            if (!offscreenCanvasRef.current) {
+                offscreenCanvasRef.current = document.createElement('canvas');
+            }
+            if (!offscreenTextlessCanvasRef.current) {
+                offscreenTextlessCanvasRef.current = document.createElement('canvas');
+            }
+            
+            const offscreenCanvas = offscreenCanvasRef.current;
+            const offscreenTextlessCanvas = offscreenTextlessCanvasRef.current;
+            
             const context = offscreenCanvas.getContext('2d');
-            if (!context) return;
+            const contextTextless = offscreenTextlessCanvas.getContext('2d');
+            
+            if (!context || !contextTextless) return;
 
             offscreenCanvas.height = viewport.height;
             offscreenCanvas.width = viewport.width;
+            offscreenTextlessCanvas.height = viewport.height;
+            offscreenTextlessCanvas.width = viewport.width;
 
             const renderContext = {
                 canvasContext: context,
                 viewport: viewport,
             };
+            
+            const renderContextTextless = {
+                canvasContext: contextTextless,
+                viewport: viewport,
+            };
 
             try {
+                // Render both concurrently
                 renderTask = page.render(renderContext);
-                await renderTask.promise;
+                const bgPageRenderTask = bgPdfDoc ? bgPdfDoc.getPage(pageNum).then((bgPage: any) => bgPage.render(renderContextTextless).promise) : Promise.resolve();
+                
+                await Promise.all([renderTask.promise, bgPageRenderTask]);
 
                 // Initialize Fabric canvas
                 if (!fabricCanvasRef.current) {
@@ -117,6 +146,7 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                                     cornerColor: '#3b82f6',
                                     cornerStrokeColor: '#3b82f6',
                                     cursorColor: '#000000',
+                                    hoverCursor: 'pointer',
                                 });
                                 // Custom PDF metadata (preserved in toJSON serialization)
                                 (textOverlay as any).isOriginalText = true;
@@ -209,14 +239,39 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                     fabricCanvas.on('text:editing:entered', (e: any) => {
                         const obj = e.target;
                         if (obj && obj.isOriginalText && !obj.isEdited) {
-                            // Spawn white cover underneath to hide original PDF text
-                            const cover = new fabric.Rect({
-                                left: obj.left,
-                                top: obj.top,
-                                width: obj.width * (obj.scaleX || 1),
-                                height: obj.height * (obj.scaleY || 1),
-                                fill: '#ffffff',
-                                stroke: 'none',
+                            
+                            // Bounds of the text object
+                            const left = obj.left;
+                            const top = obj.top;
+                            const width = obj.width * (obj.scaleX || 1);
+                            const height = obj.height * (obj.scaleY || 1);
+                            
+                            // Draw the exact region from the textless canvas to a temporary patch canvas
+                            const patchCanvas = document.createElement('canvas');
+                            patchCanvas.width = width;
+                            patchCanvas.height = height;
+                            const patchCtx = patchCanvas.getContext('2d');
+                            if (patchCtx && offscreenTextlessCanvasRef.current) {
+                                // If background is still loading (bgPdfDoc === pdfDoc), use solid white fallback 
+                                // to prevent overlapping text mess.
+                                if (bgPdfDoc && pdfDoc && bgPdfDoc === pdfDoc) {
+                                    patchCtx.fillStyle = '#ffffff';
+                                    patchCtx.fillRect(0, 0, width, height);
+                                } else {
+                                    patchCtx.drawImage(
+                                        offscreenTextlessCanvasRef.current, 
+                                        left, top, width, height, // Source rect
+                                        0, 0, width, height       // Dest rect
+                                    );
+                                }
+                            }
+                            
+                            // Spawn the invisible cloaking patch underneath to hide original PDF text natively
+                            const cover = new fabric.Image(patchCanvas, {
+                                left: left,
+                                top: top,
+                                width: width,
+                                height: height,
                                 selectable: false,
                                 evented: false,
                                 id: `cover_${Math.random().toString(36).substr(2, 9)}`,
@@ -242,7 +297,7 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                         }
                     });
                 } else {
-                    // If already exists, just update dimensions and background
+                    // Update dimensions and background if already initialized
                     const fCanvas = fabricCanvasRef.current;
                     fCanvas.setWidth(viewport.width);
                     fCanvas.setHeight(viewport.height);
@@ -268,7 +323,7 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                 delete fabricCanvasRegistry[pageNum];
             }
         };
-    }, [pdfDoc, pageNum, scale, dispatch]);
+    }, [pdfDoc, bgPdfDoc, pageNum, scale, dispatch]);
 
     // Track Canvas Changes for History & Snap to Grid
     useEffect(() => {

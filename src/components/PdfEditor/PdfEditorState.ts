@@ -17,6 +17,7 @@ export interface PdfDocumentState {
   numPages: number;
   fileName: string;
   fileSize: number;
+  bgPdfDoc?: any; // Textless pdfjs instance for visual rendering
   password?: string;
 }
 

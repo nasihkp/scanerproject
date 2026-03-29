@@ -18,6 +18,7 @@ interface CenterCanvasProps {
 
 export const CenterCanvas: React.FC<CenterCanvasProps> = ({ state, dispatch }) => {
     const [pdfDoc, setPdfDoc] = useState<any>(null);
+    const [bgPdfDoc, setBgPdfDoc] = useState<any>(null);
     const [numPages, setNumPages] = useState<number>(0);
     const [isLoading, setIsLoading] = useState<boolean>(false);
 
@@ -32,16 +33,33 @@ export const CenterCanvas: React.FC<CenterCanvasProps> = ({ state, dispatch }) =
                 try {
                     // Reset pages on new file
                     setPdfDoc(null);
+                    setBgPdfDoc(null);
                     setNumPages(0);
                     setIsLoading(true);
 
-                    const arrayBuffer = await fileToProcess.arrayBuffer();
-                    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+                    console.log("Loading original PDF document...");
+                    
+                    // Read file bytes ONCE into a Uint8Array, then make independent 
+                    // copies for each consumer to avoid "detached ArrayBuffer" errors.
+                    // pdfjsLib.getDocument() transfers (detaches) the buffer it receives,
+                    // so each call needs its own copy.
+                    const fileBytes = new Uint8Array(await fileToProcess.arrayBuffer());
+                    
+                    // Copy for pdfjs initial load
+                    const pdfJsBuffer = new Uint8Array(fileBytes);
+                    
+                    // 1. Load original document for immediate display
+                    const loadingTask = pdfjsLib.getDocument({ data: pdfJsBuffer });
                     const loadedPdf = await loadingTask.promise;
+                    console.log("Original PDF loaded successfully, pages:", loadedPdf.numPages);
+                    
+                    // Immediate update for "Instant Open" experience
                     setPdfDoc(loadedPdf);
                     setNumPages(loadedPdf.numPages);
+                    setBgPdfDoc(loadedPdf); // Initial fallback is the original doc itself
+                    setIsLoading(false); // Stop loader early
 
-                    // Also update global state with page count
+                    // Update global state immediately
                     dispatch({
                         type: 'SET_DOCUMENT',
                         payload: {
@@ -49,11 +67,62 @@ export const CenterCanvas: React.FC<CenterCanvasProps> = ({ state, dispatch }) =
                             numPages: loadedPdf.numPages,
                             fileName: fileToProcess.name,
                             fileSize: fileToProcess.size,
+                            bgPdfDoc: loadedPdf,
                         },
                     });
+
+                    // 2. BACKGROUND TASK: Generate textless structural buffer using MuPDF WASM
+                    // This happens while the user already sees the PDF
+                    const processBackground = async () => {
+                        try {
+                            // Use a FRESH copy of the original bytes — the previous buffer
+                            // was consumed/detached by pdfjsLib.getDocument above.
+                            const muPdfBuffer = new Uint8Array(fileBytes);
+                            console.log("Attempting to generate textless background layer via MuPDF WASM...");
+                            
+                            const mupdf = await import('mupdf');
+                            if (mupdf && mupdf.Document) {
+                                console.log("MuPDF module imported, opening document...");
+                                const mDoc = mupdf.Document.openDocument(muPdfBuffer, "application/pdf") as any;
+                                const count = mDoc.countPages();
+                                
+                                for (let i = 0; i < count; i++) {
+                                    const mPage = mDoc.loadPage(i) as any;
+                                    const annot = mPage.createAnnotation("Redact");
+                                    annot.setRect([-10000, -10000, 10000, 10000]); 
+                                    mPage.applyRedactions(false, 0, 0, 0); 
+                                }
+                                
+                                const outBuf = mDoc.saveToBuffer();
+                                const textlessBuffer = new Uint8Array(outBuf);
+                                
+                                // Load the pure graphical textless document for background rendering
+                                const bgLoadingTask = pdfjsLib.getDocument({ data: textlessBuffer });
+                                const bgLoadedPdf = await bgLoadingTask.promise;
+                                
+                                setBgPdfDoc(bgLoadedPdf);
+                                
+                                // Update global state with the optimized background doc
+                                dispatch({
+                                    type: 'SET_DOCUMENT',
+                                    payload: {
+                                        file: fileToProcess,
+                                        numPages: loadedPdf.numPages,
+                                        fileName: fileToProcess.name,
+                                        fileSize: fileToProcess.size,
+                                        bgPdfDoc: bgLoadedPdf,
+                                    },
+                                });
+                                console.log("Textless background layer generated and applied.");
+                            }
+                        } catch (mupdfErr) {
+                            console.warn("Could not generate textless background via MuPDF (keeping original as fallback):", mupdfErr);
+                        }
+                    };
+                    
+                    processBackground();
                 } catch (err) {
                     console.error("Error loading PDF from state change:", err);
-                } finally {
                     setIsLoading(false);
                 }
             };
@@ -61,6 +130,7 @@ export const CenterCanvas: React.FC<CenterCanvasProps> = ({ state, dispatch }) =
         } else if (!state.document?.file) {
             // Document cleared
             setPdfDoc(null);
+            setBgPdfDoc(null);
             setNumPages(0);
             setIsLoading(false);
             lastProcessedFileRef.current = null;
@@ -118,6 +188,7 @@ export const CenterCanvas: React.FC<CenterCanvasProps> = ({ state, dispatch }) =
                         <PdfPageRenderer
                             key={i + 1}
                             pdfDoc={pdfDoc}
+                            bgPdfDoc={bgPdfDoc}
                             pageNum={i + 1}
                             scale={state.viewport.zoom}
                             activeTool={state.activeTool}

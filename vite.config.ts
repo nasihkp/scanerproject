@@ -16,4 +16,13 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  optimizeDeps: {
+    exclude: ['mupdf'],
+    esbuildOptions: {
+      target: 'esnext' // Support top-level await for MuPDF WASM
+    }
+  },
+  build: {
+    target: 'esnext' // Support top-level await for MuPDF WASM production build
+  }
 })
