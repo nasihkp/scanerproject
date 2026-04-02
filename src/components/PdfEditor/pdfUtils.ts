@@ -166,7 +166,7 @@ export const saveEditedPdf = async (file: File, password?: string): Promise<{ pd
                     // Skip redacting covers if MuPDF already successfully removed the text natively
                     if (obj.isOriginalTextCover && mupdfSuccess) return;
 
-                    if (obj.isRedaction || obj.isOriginalTextCover) {
+                    if (obj.isRedaction || obj.isOriginalTextCover || obj.isOriginalImageCover) {
                         try {
                             page.drawRectangle({
                                 x: obj.left,
@@ -201,8 +201,8 @@ export const saveEditedPdf = async (file: File, password?: string): Promise<{ pd
                 fCanvas.backgroundColor = 'rgba(0,0,0,0)'; // Force transparency
 
                 rawObjs.forEach((obj: any) => {
-                    // Hide objects that are NOT user edits (original text, covers, redactions)
-                    if (obj.isOriginalText || obj.isOriginalTextCover || obj.isRedaction) {
+                    // Hide objects that are NOT user edits (original text, images, covers, redactions)
+                    if (obj.isOriginalText || obj.isOriginalTextCover || obj.isOriginalImage || obj.isOriginalImageCover || obj.isRedaction) {
                         if (obj.visible !== false) {
                             obj.visible = false;
                             hiddenObjs.push(obj);
@@ -274,7 +274,7 @@ async function applyInvisibleLayer(pdfDoc: any, page: any, rawObjs: any[], redac
     const form = pdfDoc.getForm();
 
     for (const obj of rawObjs) {
-        if (obj.isRedaction || obj.isOriginalTextCover) continue;
+        if (obj.isRedaction || obj.isOriginalTextCover || obj.isOriginalImage || obj.isOriginalImageCover) continue;
 
         const width = obj.width * (obj.scaleX || 1);
         const height = obj.height * (obj.scaleY || 1);

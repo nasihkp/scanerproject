@@ -2,8 +2,130 @@ import React, { useEffect, useRef } from 'react';
 import { Action, ToolName } from './PdfEditorState';
 import { fabricCanvasRegistry } from './pdfUtils';
 
+// @ts-ignore
+import * as pdfjsLib from 'pdfjs-dist/build/pdf';
+
 // We put fabric in an ambient declaration since it's from CDN
 declare var fabric: any;
+
+// ── PDF Object Decomposition Helpers ──
+
+function multiplyMatrices(m1: number[], m2: number[]): number[] {
+    return [
+        m1[0] * m2[0] + m1[2] * m2[1],
+        m1[1] * m2[0] + m1[3] * m2[1],
+        m1[0] * m2[2] + m1[2] * m2[3],
+        m1[1] * m2[2] + m1[3] * m2[3],
+        m1[0] * m2[4] + m1[2] * m2[5] + m1[4],
+        m1[1] * m2[4] + m1[3] * m2[5] + m1[5],
+    ];
+}
+
+interface ExtractedImage {
+    name: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    dataUrl: string;
+}
+
+async function extractPageImages(page: any, viewport: any): Promise<ExtractedImage[]> {
+    const results: ExtractedImage[] = [];
+    try {
+        const ops = await page.getOperatorList();
+        const OPS = pdfjsLib.OPS;
+        const ctmStack: number[][] = [];
+        let ctm: number[] = [1, 0, 0, 1, 0, 0];
+
+        for (let i = 0; i < ops.fnArray.length; i++) {
+            const fn = ops.fnArray[i];
+            const args = ops.argsArray[i];
+
+            if (fn === OPS.save) {
+                ctmStack.push([...ctm]);
+            } else if (fn === OPS.restore) {
+                ctm = ctmStack.pop() || [1, 0, 0, 1, 0, 0];
+            } else if (fn === OPS.transform) {
+                ctm = multiplyMatrices(ctm, args as number[]);
+            } else if (fn === OPS.paintImageXObject || fn === OPS.paintJpegXObject) {
+                const imgName = args[0] as string;
+                try {
+                    const imgObj: any = await new Promise((resolve, reject) => {
+                        const timeout = setTimeout(() => reject(new Error('timeout')), 3000);
+                        page.objs.get(imgName, (data: any) => {
+                            clearTimeout(timeout);
+                            resolve(data);
+                        });
+                    });
+                    if (!imgObj || !imgObj.width || !imgObj.height) continue;
+
+                    const vt = viewport.transform;
+                    const fullCtm = multiplyMatrices(vt, ctm);
+                    const canvasWidth = Math.abs(Math.hypot(fullCtm[0], fullCtm[1]));
+                    const canvasHeight = Math.abs(Math.hypot(fullCtm[2], fullCtm[3]));
+                    const canvasX = fullCtm[4];
+                    const canvasY = fullCtm[5] - canvasHeight;
+
+                    // Skip tiny images and full-page backgrounds
+                    const pageArea = viewport.width * viewport.height;
+                    if (canvasWidth < 20 || canvasHeight < 20) continue;
+                    if (canvasWidth * canvasHeight > pageArea * 0.9) continue;
+
+                    const offCanvas = document.createElement('canvas');
+                    offCanvas.width = imgObj.width;
+                    offCanvas.height = imgObj.height;
+                    const offCtx = offCanvas.getContext('2d');
+                    if (!offCtx) continue;
+
+                    const imageData = offCtx.createImageData(imgObj.width, imgObj.height);
+                    if (imgObj.data) {
+                        const src = imgObj.data;
+                        const dst = imageData.data;
+                        const totalPx = imgObj.width * imgObj.height;
+                        if (src.length === totalPx * 4) {
+                            dst.set(src);
+                        } else if (src.length === totalPx * 3) {
+                            for (let p = 0; p < totalPx; p++) {
+                                dst[p * 4] = src[p * 3];
+                                dst[p * 4 + 1] = src[p * 3 + 1];
+                                dst[p * 4 + 2] = src[p * 3 + 2];
+                                dst[p * 4 + 3] = 255;
+                            }
+                        }
+                        offCtx.putImageData(imageData, 0, 0);
+                    } else if (imgObj instanceof HTMLImageElement || imgObj instanceof HTMLCanvasElement) {
+                        offCtx.drawImage(imgObj, 0, 0);
+                    } else {
+                        continue;
+                    }
+
+                    results.push({
+                        name: imgName,
+                        x: canvasX,
+                        y: canvasY,
+                        width: canvasWidth,
+                        height: canvasHeight,
+                        dataUrl: offCanvas.toDataURL('image/png'),
+                    });
+                } catch (e) {
+                    console.warn(`Failed to extract image ${imgName}:`, e);
+                }
+            }
+        }
+    } catch (err) {
+        console.warn('Image extraction from page failed:', err);
+    }
+    return results;
+}
+
+// Custom serialization properties for all toJSON calls
+const CUSTOM_PROPS = [
+    'id', 'isPdfForm', 'formType', 'isRedaction',
+    'isOriginalText', 'isOriginalTextCover', 'originalStr', 'isEdited',
+    'isOriginalImage', 'isOriginalImageCover',
+    'originalLeft', 'originalTop', 'originalWidth', 'originalHeight'
+];
 
 
 interface PdfPageRendererProps {
@@ -158,19 +280,61 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                             console.warn('Text extraction failed:', textErr);
                         }
 
-                        // Capture pristine state AFTER text overlays are added
-                        pristineStateJSON.current = fabricCanvas.toJSON(
-                            ['id', 'isPdfForm', 'formType', 'isRedaction', 'isOriginalText', 'isOriginalTextCover', 'originalStr', 'isEdited']
-                        );
+                        // ── Extract embedded images as independent movable objects ──
+                        try {
+                            const extractedImages = await extractPageImages(page, viewport);
+                            const imageLoadPromises = extractedImages.map((img) => {
+                                return new Promise<void>((resolve) => {
+                                    fabric.Image.fromURL(img.dataUrl, (fabricImg: any) => {
+                                        if (!fabricImg) { resolve(); return; }
+                                        fabricImg.set({
+                                            left: img.x,
+                                            top: img.y,
+                                            scaleX: img.width / (fabricImg.width || 1),
+                                            scaleY: img.height / (fabricImg.height || 1),
+                                            id: `img_${Math.random().toString(36).substr(2, 9)}`,
+                                            selectable: true,
+                                            evented: true,
+                                            transparentCorners: false,
+                                            cornerSize: 6,
+                                            borderColor: '#10b981',
+                                            cornerColor: '#10b981',
+                                            cornerStrokeColor: '#10b981',
+                                            hoverCursor: 'move',
+                                        });
+                                        (fabricImg as any).isOriginalImage = true;
+                                        (fabricImg as any).originalLeft = img.x;
+                                        (fabricImg as any).originalTop = img.y;
+                                        (fabricImg as any).originalWidth = img.width;
+                                        (fabricImg as any).originalHeight = img.height;
+                                        fabricCanvas.add(fabricImg);
+                                        resolve();
+                                    });
+                                });
+                            });
+                            await Promise.all(imageLoadPromises);
+                            if (extractedImages.length > 0) {
+                                console.log(`Decomposed ${extractedImages.length} image(s) from page ${pageNum}`);
+                                fabricCanvas.renderAll();
+                            }
+                        } catch (imgErr) {
+                            console.warn('Image decomposition failed:', imgErr);
+                        }
+
+                        // Capture pristine state AFTER text + image overlays are added
+                        pristineStateJSON.current = fabricCanvas.toJSON(CUSTOM_PROPS);
                     });
 
-                    // ── Hover highlights on PDF text objects ──
+                    // ── Hover highlights on PDF text and image objects ──
                     fabricCanvas.on('mouse:over', (e: any) => {
                         if (e.target && (e.target as any).isOriginalText) {
                             if (!(e.target as any).isEdited) {
                                 e.target.set({ backgroundColor: 'rgba(59,130,246,0.12)' });
                                 fabricCanvas.renderAll();
                             }
+                        } else if (e.target && (e.target as any).isOriginalImage) {
+                            e.target.set({ borderColor: '#10b981', shadow: new fabric.Shadow({ color: 'rgba(16,185,129,0.3)', blur: 8 }) });
+                            fabricCanvas.renderAll();
                         }
                     });
                     fabricCanvas.on('mouse:out', (e: any) => {
@@ -179,6 +343,12 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                             const isSelected = fabricCanvas.getActiveObjects().includes(obj);
                             if (!isSelected && !(obj as any).isEdited) {
                                 obj.set({ backgroundColor: 'rgba(0,0,0,0)' });
+                                fabricCanvas.renderAll();
+                            }
+                        } else if (obj && (obj as any).isOriginalImage) {
+                            const isSelected = fabricCanvas.getActiveObjects().includes(obj);
+                            if (!isSelected) {
+                                obj.set({ shadow: null });
                                 fabricCanvas.renderAll();
                             }
                         }
@@ -472,7 +642,6 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                     fCanvas.discardActiveObject();
                     selectedObjects.forEach((obj: any) => {
                         if (obj.isOriginalText) {
-                            // Create a white cover to physically erase this text in the saved PDF
                             const cover = new fabric.Rect({
                                 left: obj.left,
                                 top: obj.top,
@@ -486,13 +655,28 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                             });
                             (cover as any).isOriginalTextCover = true;
                             fCanvas.add(cover);
+                        } else if (obj.isOriginalImage) {
+                            // White cover hides original image in the rendered background
+                            const cover = new fabric.Rect({
+                                left: obj.originalLeft ?? obj.left,
+                                top: obj.originalTop ?? obj.top,
+                                width: obj.originalWidth ?? (obj.width * (obj.scaleX || 1)),
+                                height: obj.originalHeight ?? (obj.height * (obj.scaleY || 1)),
+                                fill: '#ffffff',
+                                stroke: 'none',
+                                selectable: false,
+                                evented: false,
+                                id: `imgcover_${Math.random().toString(36).substr(2, 9)}`,
+                            });
+                            (cover as any).isOriginalImageCover = true;
+                            fCanvas.add(cover);
+                            cover.sendToBack();
                         }
                         fCanvas.remove(obj);
                     });
                     fCanvas.requestRenderAll();
 
-                    // Trigger history save
-                    const json = fCanvas.toJSON(['id', 'isPdfForm', 'formType', 'isRedaction', 'isOriginalText', 'isOriginalTextCover', 'originalStr', 'isEdited']);
+                    const json = fCanvas.toJSON(CUSTOM_PROPS);
                     dispatch({
                         type: 'SAVE_HISTORY',
                         payload: { pageNum, json }
@@ -515,7 +699,7 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
             if (activeTool === 'eraser' && opt.target) {
                 const erasedObj = opt.target;
 
-                // If erasing a PDF text object, leave a white cover behind
+                // If erasing a PDF text or image object, leave a white cover behind
                 if ((erasedObj as any).isOriginalText) {
                     const cover = new fabric.Rect({
                         left: erasedObj.left,
@@ -530,6 +714,21 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                     });
                     (cover as any).isOriginalTextCover = true;
                     fCanvas.add(cover);
+                } else if ((erasedObj as any).isOriginalImage) {
+                    const cover = new fabric.Rect({
+                        left: erasedObj.originalLeft ?? erasedObj.left,
+                        top: erasedObj.originalTop ?? erasedObj.top,
+                        width: erasedObj.originalWidth ?? (erasedObj.width * (erasedObj.scaleX || 1)),
+                        height: erasedObj.originalHeight ?? (erasedObj.height * (erasedObj.scaleY || 1)),
+                        fill: '#ffffff',
+                        stroke: 'none',
+                        selectable: false,
+                        evented: false,
+                        id: `imgcover_${Math.random().toString(36).substr(2, 9)}`,
+                    });
+                    (cover as any).isOriginalImageCover = true;
+                    fCanvas.add(cover);
+                    cover.sendToBack();
                 }
 
                 // Remove from multiple selection if it was part of one
