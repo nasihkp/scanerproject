@@ -1,4 +1,5 @@
-import { ArrowLeft, Moon, Image, FileType, HelpCircle, Info, User, LogOut, Cloud, FileText } from 'lucide-react';
+import React, { useState } from 'react';
+import { ArrowLeft, Moon, Image, FileType, HelpCircle, Info, User, LogOut, Cloud, FileText, X } from 'lucide-react';
 import { useAuth } from "../hooks/useAuth";
 
 interface SettingsScreenProps {
@@ -10,6 +11,7 @@ interface SettingsScreenProps {
 
 export function SettingsScreen({ isDarkMode, onToggleDarkMode, onBack, onMergePdf }: SettingsScreenProps) {
   const { user, signOut, signInWithGoogle } = useAuth();
+  const [isAboutModalOpen, setIsAboutModalOpen] = useState(false);
 
   const handleSignOut = async () => {
     if (confirm("Are you sure you want to sign out?")) {
@@ -127,18 +129,6 @@ export function SettingsScreen({ isDarkMode, onToggleDarkMode, onBack, onMergePd
           <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">Scan Settings</h3>
 
           <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700">
-            <button className="w-full flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center">
-                  <Image className="w-5 h-5 text-gray-700 dark:text-gray-300" />
-                </div>
-                <div className="text-left">
-                  <h4 className="font-semibold text-gray-900 dark:text-white text-sm">Scan Quality</h4>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">High quality</p>
-                </div>
-              </div>
-              <span className="text-gray-400">›</span>
-            </button>
 
             <button className="w-full flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
               <div className="flex items-center gap-3">
@@ -176,7 +166,10 @@ export function SettingsScreen({ isDarkMode, onToggleDarkMode, onBack, onMergePd
           <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">About</h3>
 
           <div className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 divide-y divide-gray-200 dark:divide-gray-700">
-            <button className="w-full flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+            <button 
+              onClick={() => window.open('https://forms.gle/Uvj1NxFA9iCoPGa76', '_blank')}
+              className="w-full flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+            >
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center">
                   <HelpCircle className="w-5 h-5 text-gray-700 dark:text-gray-300" />
@@ -189,7 +182,10 @@ export function SettingsScreen({ isDarkMode, onToggleDarkMode, onBack, onMergePd
               <span className="text-gray-400">›</span>
             </button>
 
-            <button className="w-full flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+            <button 
+              onClick={() => setIsAboutModalOpen(true)}
+              className="w-full flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+            >
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center">
                   <Info className="w-5 h-5 text-gray-700 dark:text-gray-300" />
@@ -204,6 +200,43 @@ export function SettingsScreen({ isDarkMode, onToggleDarkMode, onBack, onMergePd
           </div>
         </div>
       </div >
+
+      {/* About Modal */}
+      {isAboutModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm transition-all duration-300">
+          <div className="bg-white dark:bg-gray-800 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl scale-100 animate-in fade-in zoom-in duration-200">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center">
+                    <Info className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                  </div>
+                  <h3 className="text-lg font-bold text-gray-900 dark:text-white">About SmartScan</h3>
+                </div>
+                <button
+                  onClick={() => setIsAboutModalOpen(false)}
+                  className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-full transition-colors"
+                >
+                  <X className="w-5 h-5 text-gray-500 dark:text-gray-400" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
+                  SmartScan is an advanced document scanning and management solution. It empowers users to capture, edit, and organize documents with ease. 
+                </p>
+                <p className="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">
+                  Built with professional PDF editing, OCR (Optical Character Recognition), and secure Google Drive integration, SmartScan ensures your documents are always accessible and editable.
+                </p>
+                <div className="pt-4 border-t border-gray-100 dark:border-gray-700 flex justify-between items-center text-xs text-gray-400">
+                  <span>Version 1.0.0</span>
+                  <span>© 2026 SmartScan AI</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div >
   );
 }
