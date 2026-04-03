@@ -21,22 +21,24 @@ function multiplyMatrices(m1: number[], m2: number[]): number[] {
     ];
 }
 
-interface ExtractedImage {
-    name: string;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    dataUrl: string;
+// ── PDF Object Decomposition Engine ──
+
+interface DecomposedObject {
+    type: 'text' | 'image' | 'path';
+    data: any;
 }
 
-async function extractPageImages(page: any, viewport: any): Promise<ExtractedImage[]> {
-    const results: ExtractedImage[] = [];
+async function decomposePage(page: any, viewport: any, scale: number): Promise<DecomposedObject[]> {
+    const results: DecomposedObject[] = [];
     try {
         const ops = await page.getOperatorList();
         const OPS = pdfjsLib.OPS;
         const ctmStack: number[][] = [];
         let ctm: number[] = [1, 0, 0, 1, 0, 0];
+        
+        let fillColor = '#000000';
+        let strokeColor = '#000000';
+        let lineWidth = 1;
 
         for (let i = 0; i < ops.fnArray.length; i++) {
             const fn = ops.fnArray[i];
@@ -48,76 +50,96 @@ async function extractPageImages(page: any, viewport: any): Promise<ExtractedIma
                 ctm = ctmStack.pop() || [1, 0, 0, 1, 0, 0];
             } else if (fn === OPS.transform) {
                 ctm = multiplyMatrices(ctm, args as number[]);
-            } else if (fn === OPS.paintImageXObject || fn === OPS.paintJpegXObject) {
+            } 
+            else if (fn === OPS.setFillRGBColor) {
+                const [r, g, b] = args as number[];
+                fillColor = `rgb(${r},${g},${b})`;
+            }
+            else if (fn === OPS.setStrokeRGBColor) {
+                const [r, g, b] = args as number[];
+                strokeColor = `rgb(${r},${g},${b})`;
+            }
+            else if (fn === OPS.setLineWidth) {
+                lineWidth = args[0] as number;
+            }
+            else if (fn === OPS.paintImageXObject || fn === OPS.paintJpegXObject) {
                 const imgName = args[0] as string;
-                try {
-                    const imgObj: any = await new Promise((resolve, reject) => {
-                        const timeout = setTimeout(() => reject(new Error('timeout')), 3000);
-                        page.objs.get(imgName, (data: any) => {
-                            clearTimeout(timeout);
-                            resolve(data);
-                        });
-                    });
-                    if (!imgObj || !imgObj.width || !imgObj.height) continue;
+                const imgObj: any = await new Promise((resolve) => {
+                    page.objs.get(imgName, (data: any) => resolve(data));
+                });
+                if (!imgObj || !imgObj.width || !imgObj.height) continue;
 
-                    const vt = viewport.transform;
-                    const fullCtm = multiplyMatrices(vt, ctm);
-                    const canvasWidth = Math.abs(Math.hypot(fullCtm[0], fullCtm[1]));
-                    const canvasHeight = Math.abs(Math.hypot(fullCtm[2], fullCtm[3]));
-                    const canvasX = fullCtm[4];
-                    const canvasY = fullCtm[5] - canvasHeight;
+                const fullCtm = multiplyMatrices(viewport.transform, ctm);
+                const w = Math.abs(Math.hypot(fullCtm[0], fullCtm[1]));
+                const h = Math.abs(Math.hypot(fullCtm[2], fullCtm[3]));
+                const x = fullCtm[4];
+                const y = fullCtm[5] - h;
 
-                    // Skip tiny images and full-page backgrounds
-                    const pageArea = viewport.width * viewport.height;
-                    if (canvasWidth < 20 || canvasHeight < 20) continue;
-                    if (canvasWidth * canvasHeight > pageArea * 0.9) continue;
+                const offCanvas = document.createElement('canvas');
+                offCanvas.width = imgObj.width;
+                offCanvas.height = imgObj.height;
+                const offCtx = offCanvas.getContext('2d');
+                if (!offCtx) continue;
 
-                    const offCanvas = document.createElement('canvas');
-                    offCanvas.width = imgObj.width;
-                    offCanvas.height = imgObj.height;
-                    const offCtx = offCanvas.getContext('2d');
-                    if (!offCtx) continue;
-
-                    const imageData = offCtx.createImageData(imgObj.width, imgObj.height);
-                    if (imgObj.data) {
-                        const src = imgObj.data;
-                        const dst = imageData.data;
-                        const totalPx = imgObj.width * imgObj.height;
-                        if (src.length === totalPx * 4) {
-                            dst.set(src);
-                        } else if (src.length === totalPx * 3) {
-                            for (let p = 0; p < totalPx; p++) {
-                                dst[p * 4] = src[p * 3];
-                                dst[p * 4 + 1] = src[p * 3 + 1];
-                                dst[p * 4 + 2] = src[p * 3 + 2];
-                                dst[p * 4 + 3] = 255;
-                            }
+                const imageData = offCtx.createImageData(imgObj.width, imgObj.height);
+                if (imgObj.data) {
+                    const src = imgObj.data;
+                    const dst = imageData.data;
+                    const totalPx = imgObj.width * imgObj.height;
+                    if (src.length === totalPx * 3) {
+                        for (let p = 0; p < totalPx; p++) {
+                            dst[p * 4] = src[p * 3];
+                            dst[p * 4 + 1] = src[p * 3 + 1];
+                            dst[p * 4 + 2] = src[p * 3 + 2];
+                            dst[p * 4 + 3] = 255;
                         }
-                        offCtx.putImageData(imageData, 0, 0);
-                    } else if (imgObj instanceof HTMLImageElement || imgObj instanceof HTMLCanvasElement) {
-                        offCtx.drawImage(imgObj, 0, 0);
                     } else {
-                        continue;
+                        dst.set(src);
                     }
-
-                    results.push({
-                        name: imgName,
-                        x: canvasX,
-                        y: canvasY,
-                        width: canvasWidth,
-                        height: canvasHeight,
-                        dataUrl: offCanvas.toDataURL('image/png'),
-                    });
-                } catch (e) {
-                    console.warn(`Failed to extract image ${imgName}:`, e);
+                    offCtx.putImageData(imageData, 0, 0);
+                } else if (imgObj instanceof HTMLImageElement || imgObj instanceof HTMLCanvasElement) {
+                    offCtx.drawImage(imgObj, 0, 0);
                 }
+
+                results.push({
+                    type: 'image',
+                    data: { id: `img_${Math.random()}`, left: x, top: y, width: w, height: h, dataUrl: offCanvas.toDataURL() }
+                });
+            }
+            else if (fn === OPS.rectangle) {
+                const [rx, ry, rw, rh] = args as number[];
+                const [cx, cy] = viewport.convertToViewportPoint(rx, ry);
+                const [cx2, cy2] = viewport.convertToViewportPoint(rx + rw, ry + rh);
+                results.push({
+                    type: 'path',
+                    data: {
+                        type: 'rect',
+                        left: Math.min(cx, cx2),
+                        top: Math.min(cy, cy2),
+                        width: Math.abs(cx - cx2),
+                        height: Math.abs(cy - cy2),
+                        fill: fillColor,
+                        stroke: strokeColor,
+                        strokeWidth: lineWidth * scale,
+                    }
+                });
             }
         }
-    } catch (err) {
-        console.warn('Image extraction from page failed:', err);
-    }
+
+        const textContent = await page.getTextContent();
+        textContent.items.forEach((item: any) => {
+            if (!item.str || !item.str.trim()) return;
+            const [cx, cy] = viewport.convertToViewportPoint(item.transform[4], item.transform[5]);
+            const fontH = Math.max((item.height ? item.height : Math.abs(item.transform[3])) * scale, 6);
+            results.push({
+                type: 'text',
+                data: { id: `txt_${Math.random()}`, str: item.str, left: cx, top: cy - fontH, fontSize: fontH * 1.05 }
+            });
+        });
+    } catch (err) { console.warn('Decomposition failed:', err); }
     return results;
 }
+
 
 // Custom serialization properties for all toJSON calls
 const CUSTOM_PROPS = [
@@ -157,11 +179,6 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
     const canvasElementRef = useRef<HTMLCanvasElement>(null);
     const fabricCanvasRef = useRef<any>(null);
     
-    // Use refs for offscreen canvases so that the fabric event listeners (which are set once)
-    // always point to the most recent rendered content.
-    const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
-    const offscreenTextlessCanvasRef = useRef<HTMLCanvasElement | null>(null);
-    
     const isHistoryOperation = useRef<boolean>(false);
     const pristineStateJSON = useRef<any>(null);
 
@@ -174,45 +191,8 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
             const page = await pdfDoc.getPage(pageNum);
             const viewport = page.getViewport({ scale });
 
-            // Initialize offscreen canvases if they don't exist
-            if (!offscreenCanvasRef.current) {
-                offscreenCanvasRef.current = document.createElement('canvas');
-            }
-            if (!offscreenTextlessCanvasRef.current) {
-                offscreenTextlessCanvasRef.current = document.createElement('canvas');
-            }
-            
-            const offscreenCanvas = offscreenCanvasRef.current;
-            const offscreenTextlessCanvas = offscreenTextlessCanvasRef.current;
-            
-            const context = offscreenCanvas.getContext('2d');
-            const contextTextless = offscreenTextlessCanvas.getContext('2d');
-            
-            if (!context || !contextTextless) return;
-
-            offscreenCanvas.height = viewport.height;
-            offscreenCanvas.width = viewport.width;
-            offscreenTextlessCanvas.height = viewport.height;
-            offscreenTextlessCanvas.width = viewport.width;
-
-            const renderContext = {
-                canvasContext: context,
-                viewport: viewport,
-            };
-            
-            const renderContextTextless = {
-                canvasContext: contextTextless,
-                viewport: viewport,
-            };
-
             try {
-                // Render both concurrently
-                renderTask = page.render(renderContext);
-                const bgPageRenderTask = bgPdfDoc ? bgPdfDoc.getPage(pageNum).then((bgPage: any) => bgPage.render(renderContextTextless).promise) : Promise.resolve();
-                
-                await Promise.all([renderTask.promise, bgPageRenderTask]);
-
-                // Initialize Fabric canvas
+                // Initialize Fabric canvas if not already done
                 if (!fabricCanvasRef.current) {
                     const fabricCanvas = new fabric.Canvas(canvasElementRef.current, {
                         width: viewport.width,
@@ -221,111 +201,70 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                         backgroundColor: '#ffffff',
                     });
                     fabricCanvasRef.current = fabricCanvas;
-
-                    // Register canvas to global registry
                     fabricCanvasRegistry[pageNum] = fabricCanvas;
 
-                    // Set rendered PDF page as the fabric canvas background image
-                    const bgImage = new fabric.Image(offscreenCanvas);
-                    fabricCanvas.setBackgroundImage(bgImage, async () => {
-                        fabricCanvas.renderAll();
-
-                        // ── Extract PDF text objects and create selectable overlays ──
-                        try {
-                            const textContent = await page.getTextContent();
-                            (textContent.items as any[]).forEach((item: any) => {
-                                if (!item.str || !item.str.trim()) return;
-
-                                // Convert PDF coords (bottom-left origin) to canvas coords (top-left origin)
-                                const [cx, cy] = viewport.convertToViewportPoint(
-                                    item.transform[4],
-                                    item.transform[5]
-                                );
-
-                                // Font height: use item.height (PDF units) × scale, fallback to transform scaleY
-                                const fontH = Math.max(
-                                    (item.height ? item.height : Math.abs(item.transform[3])) * scale,
-                                    6
-                                );
-
-                                // cy is the baseline; top of glyph box is cy - fontH
-                                const textTop = cy - fontH;
-
-                                const overlayId = `txt_${Math.random().toString(36).substr(2, 9)}`;
-                                const textOverlay = new fabric.IText(item.str, {
-                                    left: cx,
-                                    top: textTop,
-                                    fontSize: fontH * 1.1,
-                                    fontFamily: 'sans-serif',
-                                    fill: 'rgba(0,0,0,0)', // Invisible initially so original PDF text shows through
-                                    backgroundColor: 'rgba(59,130,246,0)',
-                                    selectable: true,
-                                    evented: true,
-                                    id: overlayId,
-                                    transparentCorners: false,
-                                    cornerSize: 5,
-                                    borderColor: '#3b82f6',
-                                    cornerColor: '#3b82f6',
-                                    cornerStrokeColor: '#3b82f6',
-                                    cursorColor: '#000000',
-                                    hoverCursor: 'pointer',
-                                });
-                                // Custom PDF metadata (preserved in toJSON serialization)
-                                (textOverlay as any).isOriginalText = true;
-                                (textOverlay as any).originalStr = item.str;
-                                fabricCanvas.add(textOverlay);
+                    // ── Full Decomposition: Text, Images, and Paths ──
+                    const objects = await decomposePage(page, viewport, scale);
+                    
+                    for (const obj of objects) {
+                        if (obj.type === 'text') {
+                            const t = obj.data;
+                            const textOverlay = new fabric.IText(t.str, {
+                                left: t.left,
+                                top: t.top,
+                                fontSize: t.fontSize,
+                                fontFamily: 'sans-serif',
+                                fill: '#000000',
+                                selectable: true,
+                                evented: true,
+                                id: t.id,
+                                hasControls: false,
+                                hasBorders: false,
+                                lockRotation: true,
+                                lockScalingX: true,
+                                lockScalingY: true,
+                                hoverCursor: 'text',
                             });
-                            fabricCanvas.renderAll();
-                        } catch (textErr) {
-                            console.warn('Text extraction failed:', textErr);
-                        }
-
-                        // ── Extract embedded images as independent movable objects ──
-                        try {
-                            const extractedImages = await extractPageImages(page, viewport);
-                            const imageLoadPromises = extractedImages.map((img) => {
-                                return new Promise<void>((resolve) => {
-                                    fabric.Image.fromURL(img.dataUrl, (fabricImg: any) => {
-                                        if (!fabricImg) { resolve(); return; }
-                                        fabricImg.set({
-                                            left: img.x,
-                                            top: img.y,
-                                            scaleX: img.width / (fabricImg.width || 1),
-                                            scaleY: img.height / (fabricImg.height || 1),
-                                            id: `img_${Math.random().toString(36).substr(2, 9)}`,
-                                            selectable: true,
-                                            evented: true,
-                                            transparentCorners: false,
-                                            cornerSize: 6,
-                                            borderColor: '#10b981',
-                                            cornerColor: '#10b981',
-                                            cornerStrokeColor: '#10b981',
-                                            hoverCursor: 'move',
-                                        });
-                                        (fabricImg as any).isOriginalImage = true;
-                                        (fabricImg as any).originalLeft = img.x;
-                                        (fabricImg as any).originalTop = img.y;
-                                        (fabricImg as any).originalWidth = img.width;
-                                        (fabricImg as any).originalHeight = img.height;
-                                        fabricCanvas.add(fabricImg);
-                                        resolve();
+                            (textOverlay as any).isOriginalText = true;
+                            (textOverlay as any).originalStr = t.str;
+                            fabricCanvas.add(textOverlay);
+                        } 
+                        else if (obj.type === 'image') {
+                            const img = obj.data;
+                            await new Promise<void>((resolve) => {
+                                fabric.Image.fromURL(img.dataUrl, (fImg: any) => {
+                                    if (!fImg) { resolve(); return; }
+                                    fImg.set({
+                                        left: img.left,
+                                        top: img.top,
+                                        scaleX: img.width / (fImg.width || 1),
+                                        scaleY: img.height / (fImg.height || 1),
+                                        id: img.id,
+                                        selectable: true,
+                                        evented: true,
+                                        hoverCursor: 'move',
                                     });
+                                    (fImg as any).isOriginalImage = true;
+                                    fabricCanvas.add(fImg);
+                                    resolve();
                                 });
                             });
-                            await Promise.all(imageLoadPromises);
-                            if (extractedImages.length > 0) {
-                                console.log(`Decomposed ${extractedImages.length} image(s) from page ${pageNum}`);
-                                fabricCanvas.renderAll();
-                            }
-                        } catch (imgErr) {
-                            console.warn('Image decomposition failed:', imgErr);
                         }
+                        else if (obj.type === 'path' && obj.data.type === 'rect') {
+                            const rect = new fabric.Rect({
+                                ...obj.data,
+                                selectable: true,
+                                evented: true,
+                                id: `path_${Math.random().toString(36).substr(2, 5)}`,
+                            });
+                            fabricCanvas.add(rect);
+                        }
+                    }
 
-                        // Capture pristine state AFTER text + image overlays are added
-                        pristineStateJSON.current = fabricCanvas.toJSON(CUSTOM_PROPS);
-                    });
+                    fabricCanvas.renderAll();
+                    pristineStateJSON.current = fabricCanvas.toJSON(CUSTOM_PROPS);
 
-                    // ── Hover highlights on PDF text and image objects ──
+                    // ── Selection and Item Maintenance ──
                     fabricCanvas.on('mouse:over', (e: any) => {
                         if (e.target && (e.target as any).isOriginalText) {
                             if (!(e.target as any).isEdited) {
@@ -354,12 +293,10 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                         }
                     });
 
-                    // Selection event
                     fabricCanvas.on('selection:created', (e: any) => {
                         if (e.selected && e.selected.length === 1) {
                             const obj = e.selected[0];
                             if (!obj.id) obj.id = Math.random().toString(36).substr(2, 9);
-                            // Show selection highlight on PDF text objects
                             if ((obj as any).isOriginalText && !(obj as any).isEdited) {
                                 obj.set({ backgroundColor: 'rgba(59,130,246,0.2)' });
                                 fabricCanvas.renderAll();
@@ -369,15 +306,10 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                                 payload: {
                                     id: obj.id,
                                     props: {
-                                        type: obj.type,
-                                        fill: obj.fill,
-                                        stroke: obj.stroke,
-                                        strokeWidth: obj.strokeWidth,
-                                        fontSize: obj.fontSize,
-                                        fontFamily: obj.fontFamily,
-                                        text: obj.text,
-                                        opacity: obj.opacity,
-                                        backgroundColor: obj.backgroundColor
+                                        type: obj.type, fill: obj.fill, stroke: obj.stroke,
+                                        strokeWidth: obj.strokeWidth, fontSize: obj.fontSize,
+                                        fontFamily: obj.fontFamily, text: obj.text,
+                                        opacity: obj.opacity, backgroundColor: obj.backgroundColor
                                     }
                                 }
                             });
@@ -386,7 +318,6 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                         }
                     });
                     fabricCanvas.on('selection:updated', (e: any) => {
-                        // Deselected objects: reset highlight
                         (e.deselected || []).forEach((obj: any) => {
                             if (obj.isOriginalText && !obj.isEdited) {
                                 obj.set({ backgroundColor: 'rgba(0,0,0,0)' });
@@ -395,7 +326,6 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                         fabricCanvas.renderAll();
                     });
                     fabricCanvas.on('selection:cleared', (e: any) => {
-                        // Reset highlight on all deselected text objects
                         (e.deselected || []).forEach((obj: any) => {
                             if (obj.isOriginalText && !obj.isEdited) {
                                 obj.set({ backgroundColor: 'rgba(0,0,0,0)' });
@@ -405,83 +335,28 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                         dispatch({ type: 'SET_SELECTED_ELEMENT', payload: { id: null } });
                     });
 
-                    // ── Inline Editing Entry ──
                     fabricCanvas.on('text:editing:entered', (e: any) => {
                         const obj = e.target;
                         if (obj && obj.isOriginalText && !obj.isEdited) {
-                            
-                            // Bounds of the text object
-                            const left = obj.left;
-                            const top = obj.top;
-                            const width = obj.width * (obj.scaleX || 1);
-                            const height = obj.height * (obj.scaleY || 1);
-                            
-                            // Draw the exact region from the textless canvas to a temporary patch canvas
-                            const patchCanvas = document.createElement('canvas');
-                            patchCanvas.width = width;
-                            patchCanvas.height = height;
-                            const patchCtx = patchCanvas.getContext('2d');
-                            if (patchCtx && offscreenTextlessCanvasRef.current) {
-                                // If background is still loading (bgPdfDoc === pdfDoc), use solid white fallback 
-                                // to prevent overlapping text mess.
-                                if (bgPdfDoc && pdfDoc && bgPdfDoc === pdfDoc) {
-                                    patchCtx.fillStyle = '#ffffff';
-                                    patchCtx.fillRect(0, 0, width, height);
-                                } else {
-                                    patchCtx.drawImage(
-                                        offscreenTextlessCanvasRef.current, 
-                                        left, top, width, height, // Source rect
-                                        0, 0, width, height       // Dest rect
-                                    );
-                                }
-                            }
-                            
-                            // Spawn the invisible cloaking patch underneath to hide original PDF text natively
-                            const cover = new fabric.Image(patchCanvas, {
-                                left: left,
-                                top: top,
-                                width: width,
-                                height: height,
-                                selectable: false,
-                                evented: false,
-                                id: `cover_${Math.random().toString(36).substr(2, 9)}`,
-                            });
-                            (cover as any).isOriginalTextCover = true;
-                            
-                            // Send cover to back, but make sure canvas background stays absolute back
-                            fabricCanvas.add(cover);
-                            cover.sendToBack();
-
-                            // Make text visible and clear background hover highlight
-                            obj.set({ 
-                                fill: '#000000', 
-                                backgroundColor: 'rgba(0,0,0,0)',
-                                isEdited: true 
-                            });
-                            
+                            obj.set({ isEdited: true });
                             fabricCanvas.renderAll();
-
-                            // Trigger history save
-                            const json = fabricCanvas.toJSON(['id', 'isPdfForm', 'formType', 'isRedaction', 'isOriginalText', 'isOriginalTextCover', 'originalStr', 'isEdited']);
+                            const json = fabricCanvas.toJSON(CUSTOM_PROPS);
                             dispatch({ type: 'SAVE_HISTORY', payload: { pageNum, json } });
                         }
                     });
+
                 } else {
-                    // Update dimensions and background if already initialized
                     const fCanvas = fabricCanvasRef.current;
                     fCanvas.setWidth(viewport.width);
                     fCanvas.setHeight(viewport.height);
-
-                    const bgImage = new fabric.Image(offscreenCanvas);
-                    fCanvas.setBackgroundImage(bgImage, fCanvas.renderAll.bind(fCanvas));
+                    fCanvas.renderAll();
                 }
 
             } catch (err: any) {
-                if (err.name !== 'RenderingCancelledException') {
-                    console.error(`Error rendering page ${pageNum}:`, err);
-                }
+                console.error(`Error decomposing page ${pageNum}:`, err);
             }
         };
+
 
         initPage();
 

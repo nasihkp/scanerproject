@@ -54,66 +54,12 @@ export const saveEditedPdf = async (file: File, password?: string): Promise<{ pd
     const originalBytes = new Uint8Array(await file.arrayBuffer());
     let arrayBuffer: ArrayBuffer = originalBytes.buffer as ArrayBuffer;
 
-    // --- PRE-PROCESS: True Text Redaction via MuPDF WASM ---
-    const redactionOps: any[] = [];
-    const keys = Object.keys(fabricCanvasRegistry);
-    for (const key of keys) {
-        const pageIdx = parseInt(key) - 1; // 0-indexed for MuPDF
-        const fCanvas = fabricCanvasRegistry[key as any];
-        if (fCanvas) {
-            const covers = fCanvas.getObjects().filter((o: any) => o.isOriginalTextCover);
-            if (covers.length > 0) {
-                const rects = covers.map((c: any) => ({
-                    left: c.left,
-                    top: c.top,
-                    width: c.width * (c.scaleX || 1),
-                    height: c.height * (c.scaleY || 1)
-                }));
-                redactionOps.push({ page: pageIdx, rects });
-            }
-        }
-    }
-
-    let mupdfSuccess = false;
-    if (redactionOps.length > 0) {
-        try {
-            console.log("Applying native WASM redaction via MuPDF...");
-            const mupdf = await import('mupdf');
-            const mupdfBytes = new Uint8Array(originalBytes); // fresh copy for mupdf
-            const mupdfDoc = mupdf.Document.openDocument(mupdfBytes, "application/pdf") as any;
-            
-            for (const op of redactionOps) {
-                const page = mupdfDoc.loadPage(op.page) as any;
-                for (const r of op.rects) {
-                    const annot = page.createAnnotation("Redact");
-                    annot.setRect([r.left, r.top, r.left + r.width, r.top + r.height]);
-                }
-                
-                // applyRedactions(black_boxes, image_method, line_art_method, text_method)
-                // Use generic enum values if TS complains about dynamic import types
-                // REDACT_IMAGE_NONE = 0, REDACT_LINE_ART_NONE = 0, REDACT_TEXT_REMOVE = 0
-                page.applyRedactions(
-                    false, // No black boxes
-                    0,     // Preserve images
-                    0,     // Preserve vectors
-                    0      // Remove text
-                );
-            }
-            
-            const outBuffer = mupdfDoc.saveToBuffer();
-            arrayBuffer = outBuffer.buffer as ArrayBuffer;
-            mupdfSuccess = true;
-            console.log("MuPDF true text deletion successful.");
-        } catch (err) {
-            console.warn("MuPDF native redaction failed. Falling back to frontend whiteout covers.", err);
-        }
-    }
-    // --------------------------------------------------------
-
     const pdfDoc = await PDFDocument.load(arrayBuffer);
     const pageCount = pdfDoc.getPageCount();
     const base64Pngs: string[] = [];
     const allRedactions: { page: number, bounds: any[] }[] = [];
+
+    const standardFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
     for (let i = 1; i <= pageCount; i++) {
         const fCanvas = fabricCanvasRegistry[i];
@@ -123,113 +69,55 @@ export const saveEditedPdf = async (file: File, password?: string): Promise<{ pd
             const rawObjs = fCanvas.getObjects();
             const redactionBounds: any[] = [];
 
-            // Heuristic for Strategy Selection
-            // If there's original text extracted, it's Vector (Strategy 1).
-            // Otherwise, it's Scanned (Strategy 2).
-            const hasOriginalText = rawObjs.some((o: any) => o.isOriginalText);
-            const isScanned = !hasOriginalText;
-            console.log(`Page ${i}: ${isScanned ? 'Strategy 2 (Scanned/Flattened)' : 'Strategy 1 (Vector/Preserved)'}`);
-
-            // 1. Identify Redactions
-            rawObjs.forEach((obj: any) => {
-                if (obj.isRedaction) {
-                    redactionBounds.push({
-                        left: obj.left,
-                        top: obj.top,
-                        width: obj.width * (obj.scaleX || 1),
-                        height: obj.height * (obj.scaleY || 1)
-                    });
-                }
+            // STRATEGY: Full Page Reconstruction (No background)
+            const objects = fCanvas.getObjects();
+            
+            // 1. Draw a white background covering the original page content completely
+            page.drawRectangle({
+                x: 0, y: 0, width: pWidth, height: pHeight,
+                color: rgb(1, 1, 1)
             });
 
-            if (redactionBounds.length > 0) {
-                allRedactions.push({ page: i, bounds: redactionBounds });
-            }
+            // 2. Draw all decomposed objects onto the page
+            for (const obj of objects) {
+                const width = obj.width * (obj.scaleX || 1);
+                const height = obj.height * (obj.scaleY || 1);
+                const x = obj.left;
+                const y = pHeight - obj.top - height;
 
-            if (isScanned) {
-                // STRATEGY 2: Scanned/Image PDF (Rasterize + Flatten)
-                fCanvas.renderAll();
-                const dataUrl = fCanvas.toDataURL({ format: 'png', multiplier: 2 });
-                base64Pngs.push(dataUrl);
-                const bgImg = await pdfDoc.embedPng(dataUrl);
-
-                const newPage = pdfDoc.insertPage(i - 1, [pWidth, pHeight]);
-                pdfDoc.removePage(i);
-                newPage.drawImage(bgImg, { x: 0, y: 0, width: pWidth, height: pHeight });
-
-                // Add invisible search layer
-                await applyInvisibleLayer(pdfDoc, newPage, rawObjs, redactionBounds, pHeight);
-            } else {
-                // STRATEGY 1: Vector/Text PDF (Direct Object Modification + Transparent Overlay)
-                // 1. Draw opaque whiteouts directly on top of original vector content for both redactions AND text covers
-                rawObjs.forEach((obj: any) => {
-                    // Skip redacting covers if MuPDF already successfully removed the text natively
-                    if (obj.isOriginalTextCover && mupdfSuccess) return;
-
-                    if (obj.isRedaction || obj.isOriginalTextCover || obj.isOriginalImageCover) {
-                        try {
-                            page.drawRectangle({
-                                x: obj.left,
-                                y: pHeight - obj.top - (obj.height * (obj.scaleY || 1)),
-                                width: obj.width * (obj.scaleX || 1),
-                                height: obj.height * (obj.scaleY || 1),
-                                color: rgb(1, 1, 1),
-                            });
-                        } catch (e) { console.error("Whiteout failed:", e); }
-                    }
-                });
-
-                // 2. Add OCR break noise ONLY for redactions
-                for (const rect of redactionBounds) {
+                if (obj.type === 'i-text' || obj.type === 'textbox' || obj.type === 'text') {
+                    const fontSize = (obj.fontSize || 12) * (obj.scaleY || 1);
                     try {
-                        const noiseImg = await generateNoiseImage(pdfDoc, rect.width, rect.height);
-                        page.drawImage(noiseImg, {
-                            x: rect.left,
-                            y: pHeight - rect.top - rect.height,
-                            width: rect.width,
-                            height: rect.height,
+                        page.drawText(obj.text, {
+                            x: obj.left,
+                            y: pHeight - obj.top - fontSize,
+                            size: fontSize,
+                            font: standardFont,
+                            color: rgb(0, 0, 0), // Default to black for now
                         });
-                    } catch (e) { console.error("Noise failed", e); }
+                    } catch (e) { }
+                } 
+                else if (obj.type === 'image') {
+                    try {
+                        const dataUrl = obj.toDataURL();
+                        const img = await pdfDoc.embedPng(dataUrl);
+                        page.drawImage(img, { x, y, width, height });
+                    } catch (e) { }
                 }
-
-                // 3. Create a high-res transparent OVERLAY of all USER EDITS
-                const hiddenObjs: any[] = [];
-                const bgImage = fCanvas.backgroundImage;
-                const bgColor = fCanvas.backgroundColor;
-
-                if (bgImage) fCanvas.backgroundImage = null;
-                fCanvas.backgroundColor = 'rgba(0,0,0,0)'; // Force transparency
-
-                rawObjs.forEach((obj: any) => {
-                    // Hide objects that are NOT user edits (original text, images, covers, redactions)
-                    if (obj.isOriginalText || obj.isOriginalTextCover || obj.isOriginalImage || obj.isOriginalImageCover || obj.isRedaction) {
-                        if (obj.visible !== false) {
-                            obj.visible = false;
-                            hiddenObjs.push(obj);
-                        }
-                    }
-                });
-
-                fCanvas.renderAll();
-                const overlayDataUrl = fCanvas.toDataURL({ format: 'png', multiplier: 2 });
-
-                // Restore UI visibility
-                if (bgImage) fCanvas.setBackgroundImage(bgImage, fCanvas.renderAll.bind(fCanvas));
-                fCanvas.backgroundColor = bgColor;
-                hiddenObjs.forEach(obj => obj.visible = true);
-                fCanvas.renderAll();
-
-                // 4. Burn the overlay onto the PDF
-                try {
-                    const overlayImg = await pdfDoc.embedPng(overlayDataUrl);
-                    page.drawImage(overlayImg, { x: 0, y: 0, width: pWidth, height: pHeight });
-                } catch (e) { console.error("Overlay failed", e); }
-
-                // 5. Apply the invisible layer for text and forms
-                await applyInvisibleLayer(pdfDoc, page, rawObjs, redactionBounds, pHeight);
-
-                base64Pngs.push(fCanvas.toDataURL());
+                else if (obj.type === 'rect') {
+                    try {
+                        page.drawRectangle({
+                            x, y, width, height,
+                            color: rgb(0.8, 0.8, 0.8), // Placeholder for color extraction
+                            borderColor: rgb(0, 0, 0),
+                            borderWidth: obj.strokeWidth || 0,
+                        });
+                    } catch (e) { }
+                }
             }
+
+            base64Pngs.push(fCanvas.toDataURL());
+
         }
     }
 
