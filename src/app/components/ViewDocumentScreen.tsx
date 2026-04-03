@@ -1,11 +1,5 @@
 import { ArrowLeft, Share2, Trash2, Edit2 } from "lucide-react";
-
-interface ScannedDoc {
-  id: string;
-  pages: string[];
-  date: string;
-  text?: string;
-}
+import { ScannedDoc } from "../types/types";
 
 interface ViewDocumentScreenProps {
   doc: ScannedDoc;

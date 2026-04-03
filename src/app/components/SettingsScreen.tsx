@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ArrowLeft, Moon, Image, FileType, HelpCircle, Info, User, LogOut, Cloud, FileText, X } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowLeft, Moon, FileType, HelpCircle, Info, User, LogOut, Cloud, FileText, X } from 'lucide-react';
 import { useAuth } from "../hooks/useAuth";
 
 interface SettingsScreenProps {

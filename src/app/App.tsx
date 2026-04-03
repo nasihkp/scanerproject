@@ -488,7 +488,7 @@ function AppContent() {
             onSave={async (pdfBytes, fileName) => {
               // The user saved a PDF from the editor.
               // Generate a Blob URL to show in SaveShareScreen
-              const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+              const blob = new Blob([pdfBytes as any], { type: 'application/pdf' });
               const url = URL.createObjectURL(blob);
               setPdfUrl(url);
               setFileName(fileName);

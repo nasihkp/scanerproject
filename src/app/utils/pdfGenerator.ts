@@ -24,11 +24,9 @@ export const generatePDF = async (images: string[], password?: string): Promise<
         const pdfBytes = doc.output("arraybuffer");
         const pdfDoc = await PDFDocument.load(pdfBytes);
         const encryptedBytes = await pdfDoc.save({
-            userPassword: password,
-            ownerPassword: password,
             useObjectStreams: false,
         });
-        const blob = new Blob([encryptedBytes as Uint8Array], { type: "application/pdf" });
+        const blob = new Blob([encryptedBytes as any], { type: "application/pdf" });
         return URL.createObjectURL(blob);
     }
 
@@ -89,6 +87,6 @@ export const mergePDFs = async (documents: (ScannedDoc | File)[]): Promise<strin
     }
 
     const savedBytes = await mergedPdf.save();
-    const blob = new Blob([savedBytes as Uint8Array], { type: 'application/pdf' });
+    const blob = new Blob([savedBytes as any], { type: 'application/pdf' });
     return URL.createObjectURL(blob);
 };

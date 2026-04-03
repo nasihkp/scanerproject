@@ -68,7 +68,7 @@ async function decomposePage(page: any, viewport: any, scale: number): Promise<D
                 
                 // 1. Try to get image from page objects first, then common objects
                 try {
-                    imgObj = await new Promise((resolve, reject) => {
+                    imgObj = await new Promise((resolve) => {
                         const timeout = setTimeout(() => resolve(null), 2000);
                         page.objs.get(imgName, (data: any) => {
                             if (data) { clearTimeout(timeout); resolve(data); }
@@ -228,7 +228,6 @@ interface PdfPageRendererProps {
 
 export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
     pdfDoc,
-    bgPdfDoc,
     pageNum,
     scale,
     activeTool,

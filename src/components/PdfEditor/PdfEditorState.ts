@@ -1,5 +1,5 @@
 export type ToolName =
-  | 'select' | 'zoom'
+  | 'select' | 'zoom' | 'pan'
   | 'add_text' | 'pen' | 'highlighter' | 'eraser'
   | 'line' | 'arrow' | 'rectangle' | 'circle' | 'polygon'
   | 'sticky_note' | 'comment' | 'image' | 'signature' | 'stamp'
