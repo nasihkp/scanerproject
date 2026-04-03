@@ -35,7 +35,7 @@ async function decomposePage(page: any, viewport: any, scale: number): Promise<D
         const OPS = pdfjsLib.OPS;
         const ctmStack: number[][] = [];
         let ctm: number[] = [1, 0, 0, 1, 0, 0];
-        
+
         let fillColor = '#000000';
         let strokeColor = '#000000';
         let lineWidth = 1;
@@ -50,60 +50,117 @@ async function decomposePage(page: any, viewport: any, scale: number): Promise<D
                 ctm = ctmStack.pop() || [1, 0, 0, 1, 0, 0];
             } else if (fn === OPS.transform) {
                 ctm = multiplyMatrices(ctm, args as number[]);
-            } 
+            }
             else if (fn === OPS.setFillRGBColor) {
                 const [r, g, b] = args as number[];
-                fillColor = `rgb(${r},${g},${b})`;
+                fillColor = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
             }
             else if (fn === OPS.setStrokeRGBColor) {
                 const [r, g, b] = args as number[];
-                strokeColor = `rgb(${r},${g},${b})`;
+                strokeColor = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
             }
             else if (fn === OPS.setLineWidth) {
                 lineWidth = args[0] as number;
             }
             else if (fn === OPS.paintImageXObject || fn === OPS.paintJpegXObject) {
                 const imgName = args[0] as string;
-                const imgObj: any = await new Promise((resolve) => {
-                    page.objs.get(imgName, (data: any) => resolve(data));
-                });
-                if (!imgObj || !imgObj.width || !imgObj.height) continue;
+                let imgObj: any = null;
+                
+                // 1. Try to get image from page objects first, then common objects
+                try {
+                    imgObj = await new Promise((resolve, reject) => {
+                        const timeout = setTimeout(() => resolve(null), 2000);
+                        page.objs.get(imgName, (data: any) => {
+                            if (data) { clearTimeout(timeout); resolve(data); }
+                            else {
+                                page.commonObjs.get(imgName, (commonData: any) => {
+                                    clearTimeout(timeout);
+                                    resolve(commonData);
+                                });
+                            }
+                        });
+                    });
+                } catch (e) {
+                    console.warn(`Error fetching image ${imgName}:`, e);
+                }
+
+                if (!imgObj) {
+                    console.warn(`Image ${imgName} not found in objs or commonObjs`);
+                    continue;
+                }
 
                 const fullCtm = multiplyMatrices(viewport.transform, ctm);
-                const w = Math.abs(Math.hypot(fullCtm[0], fullCtm[1]));
-                const h = Math.abs(Math.hypot(fullCtm[2], fullCtm[3]));
-                const x = fullCtm[4];
-                const y = fullCtm[5] - h;
+                
+                // Calculate size and position from CTM
+                // A PDF image is a [0,0,1,1] square. 
+                // Transforming [0,0], [1,0], [1,1], [0,1] gives the 4 corners.
+                const corners = [
+                    [0, 0], [1, 0], [1, 1], [0, 1]
+                ].map(([cx, cy]) => {
+                    return [
+                        fullCtm[0] * cx + fullCtm[2] * cy + fullCtm[4],
+                        fullCtm[1] * cx + fullCtm[3] * cy + fullCtm[5]
+                    ];
+                });
+
+                const minX = Math.min(...corners.map(c => c[0]));
+                const minY = Math.min(...corners.map(c => c[1]));
+                const maxX = Math.max(...corners.map(c => c[0]));
+                const maxY = Math.max(...corners.map(c => c[1]));
+
+                const w = maxX - minX;
+                const h = maxY - minY;
 
                 const offCanvas = document.createElement('canvas');
-                offCanvas.width = imgObj.width;
-                offCanvas.height = imgObj.height;
+                const naturalW = imgObj.width || 100;
+                const naturalH = imgObj.height || 100;
+                offCanvas.width = naturalW;
+                offCanvas.height = naturalH;
                 const offCtx = offCanvas.getContext('2d');
                 if (!offCtx) continue;
 
-                const imageData = offCtx.createImageData(imgObj.width, imgObj.height);
-                if (imgObj.data) {
+                // Handle ImageBitmap (modern PDF.js)
+                if (imgObj.bitmap) {
+                    offCtx.drawImage(imgObj.bitmap, 0, 0);
+                } else if (imgObj.data) {
+                    // Handle raw data (legacy/fallback)
                     const src = imgObj.data;
-                    const dst = imageData.data;
-                    const totalPx = imgObj.width * imgObj.height;
+                    const dst = offCtx.createImageData(naturalW, naturalH);
+                    const totalPx = naturalW * naturalH;
+                    
                     if (src.length === totalPx * 3) {
+                        // RGB
                         for (let p = 0; p < totalPx; p++) {
-                            dst[p * 4] = src[p * 3];
-                            dst[p * 4 + 1] = src[p * 3 + 1];
-                            dst[p * 4 + 2] = src[p * 3 + 2];
-                            dst[p * 4 + 3] = 255;
+                            dst.data[p * 4] = src[p * 3];
+                            dst.data[p * 4 + 1] = src[p * 3 + 1];
+                            dst.data[p * 4 + 2] = src[p * 3 + 2];
+                            dst.data[p * 4 + 3] = 255;
                         }
+                    } else if (src.length === totalPx * 4) {
+                        // RGBA
+                        dst.data.set(src);
                     } else {
-                        dst.set(src);
+                        // Other formats - best effort
+                        dst.data.set(src.length > dst.data.length ? src.slice(0, dst.data.length) : src);
                     }
-                    offCtx.putImageData(imageData, 0, 0);
+                    offCtx.putImageData(dst, 0, 0);
                 } else if (imgObj instanceof HTMLImageElement || imgObj instanceof HTMLCanvasElement) {
                     offCtx.drawImage(imgObj, 0, 0);
+                } else {
+                    console.warn(`Unsupported image object format for ${imgName}`);
+                    continue;
                 }
 
                 results.push({
                     type: 'image',
-                    data: { id: `img_${Math.random()}`, left: x, top: y, width: w, height: h, dataUrl: offCanvas.toDataURL() }
+                    data: {
+                        id: `img_${Math.random().toString(36).substr(2, 9)}`,
+                        left: minX,
+                        top: minY,
+                        width: w,
+                        height: h,
+                        dataUrl: offCanvas.toDataURL('image/png'),
+                    }
                 });
             }
             else if (fn === OPS.rectangle) {
@@ -133,7 +190,13 @@ async function decomposePage(page: any, viewport: any, scale: number): Promise<D
             const fontH = Math.max((item.height ? item.height : Math.abs(item.transform[3])) * scale, 6);
             results.push({
                 type: 'text',
-                data: { id: `txt_${Math.random()}`, str: item.str, left: cx, top: cy - fontH, fontSize: fontH * 1.05 }
+                data: {
+                    id: `txt_${Math.random().toString(36).substr(2, 9)}`,
+                    str: item.str,
+                    left: cx,
+                    top: cy - fontH,
+                    fontSize: fontH * 1.05
+                }
             });
         });
     } catch (err) { console.warn('Decomposition failed:', err); }
@@ -178,12 +241,12 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasElementRef = useRef<HTMLCanvasElement>(null);
     const fabricCanvasRef = useRef<any>(null);
-    
+
     const isHistoryOperation = useRef<boolean>(false);
     const pristineStateJSON = useRef<any>(null);
 
     useEffect(() => {
-        let renderTask: any = null;
+        let isCancelled = false;
 
         const initPage = async () => {
             if (!pdfDoc || !canvasElementRef.current || !containerRef.current) return;
@@ -199,13 +262,16 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                         height: viewport.height,
                         selection: true,
                         backgroundColor: '#ffffff',
+                        controlsAboveOverlay: true,
+                        preserveObjectStacking: true,
                     });
                     fabricCanvasRef.current = fabricCanvas;
                     fabricCanvasRegistry[pageNum] = fabricCanvas;
 
                     // ── Full Decomposition: Text, Images, and Paths ──
                     const objects = await decomposePage(page, viewport, scale);
-                    
+                    if (isCancelled) return;
+
                     for (const obj of objects) {
                         if (obj.type === 'text') {
                             const t = obj.data;
@@ -218,22 +284,27 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                                 selectable: true,
                                 evented: true,
                                 id: t.id,
-                                hasControls: false,
-                                hasBorders: false,
+                                hasControls: true,
+                                hasBorders: true,
                                 lockRotation: true,
                                 lockScalingX: true,
                                 lockScalingY: true,
                                 hoverCursor: 'text',
                             });
+                            textOverlay.setControlsVisibility({
+                                tl: false, tr: false, br: false, bl: false,
+                                ml: false, mt: false, mr: false, mb: false,
+                                mtr: false,
+                            });
                             (textOverlay as any).isOriginalText = true;
                             (textOverlay as any).originalStr = t.str;
                             fabricCanvas.add(textOverlay);
-                        } 
+                        }
                         else if (obj.type === 'image') {
                             const img = obj.data;
                             await new Promise<void>((resolve) => {
                                 fabric.Image.fromURL(img.dataUrl, (fImg: any) => {
-                                    if (!fImg) { resolve(); return; }
+                                    if (!fImg || isCancelled) { resolve(); return; }
                                     fImg.set({
                                         left: img.left,
                                         top: img.top,
@@ -243,6 +314,19 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                                         selectable: true,
                                         evented: true,
                                         hoverCursor: 'move',
+                                        hasControls: true,
+                                        hasBorders: true,
+                                        lockRotation: false,
+                                        lockScalingX: false,
+                                        lockScalingY: false,
+                                        originalLeft: img.left,
+                                        originalTop: img.top,
+                                        originalWidth: img.width,
+                                        originalHeight: img.height,
+                                        cornerSize: 10,
+                                        cornerColor: '#3b82f6',
+                                        cornerStrokeColor: '#ffffff',
+                                        transparentCorners: false,
                                     });
                                     (fImg as any).isOriginalImage = true;
                                     fabricCanvas.add(fImg);
@@ -264,43 +348,11 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                     fabricCanvas.renderAll();
                     pristineStateJSON.current = fabricCanvas.toJSON(CUSTOM_PROPS);
 
-                    // ── Selection and Item Maintenance ──
-                    fabricCanvas.on('mouse:over', (e: any) => {
-                        if (e.target && (e.target as any).isOriginalText) {
-                            if (!(e.target as any).isEdited) {
-                                e.target.set({ backgroundColor: 'rgba(59,130,246,0.12)' });
-                                fabricCanvas.renderAll();
-                            }
-                        } else if (e.target && (e.target as any).isOriginalImage) {
-                            e.target.set({ borderColor: '#10b981', shadow: new fabric.Shadow({ color: 'rgba(16,185,129,0.3)', blur: 8 }) });
-                            fabricCanvas.renderAll();
-                        }
-                    });
-                    fabricCanvas.on('mouse:out', (e: any) => {
-                        const obj = e.target;
-                        if (obj && (obj as any).isOriginalText) {
-                            const isSelected = fabricCanvas.getActiveObjects().includes(obj);
-                            if (!isSelected && !(obj as any).isEdited) {
-                                obj.set({ backgroundColor: 'rgba(0,0,0,0)' });
-                                fabricCanvas.renderAll();
-                            }
-                        } else if (obj && (obj as any).isOriginalImage) {
-                            const isSelected = fabricCanvas.getActiveObjects().includes(obj);
-                            if (!isSelected) {
-                                obj.set({ shadow: null });
-                                fabricCanvas.renderAll();
-                            }
-                        }
-                    });
-
+                    // Selection events
                     fabricCanvas.on('selection:created', (e: any) => {
                         if (e.selected && e.selected.length === 1) {
                             const obj = e.selected[0];
                             if (!obj.id) obj.id = Math.random().toString(36).substr(2, 9);
-                            if ((obj as any).isOriginalText && !(obj as any).isEdited) {
-                                obj.set({ backgroundColor: 'rgba(59,130,246,0.2)' });
-                                fabricCanvas.renderAll();
-                            }
                             dispatch({
                                 type: 'SET_SELECTED_ELEMENT',
                                 payload: {
@@ -309,7 +361,7 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                                         type: obj.type, fill: obj.fill, stroke: obj.stroke,
                                         strokeWidth: obj.strokeWidth, fontSize: obj.fontSize,
                                         fontFamily: obj.fontFamily, text: obj.text,
-                                        opacity: obj.opacity, backgroundColor: obj.backgroundColor
+                                        opacity: obj.opacity ?? 1, backgroundColor: obj.backgroundColor
                                     }
                                 }
                             });
@@ -317,21 +369,27 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                             dispatch({ type: 'SET_SELECTED_ELEMENT', payload: { id: null } });
                         }
                     });
+
                     fabricCanvas.on('selection:updated', (e: any) => {
-                        (e.deselected || []).forEach((obj: any) => {
-                            if (obj.isOriginalText && !obj.isEdited) {
-                                obj.set({ backgroundColor: 'rgba(0,0,0,0)' });
-                            }
-                        });
-                        fabricCanvas.renderAll();
+                        if (e.selected && e.selected.length === 1) {
+                            const obj = e.selected[0];
+                            if (!obj.id) obj.id = Math.random().toString(36).substr(2, 9);
+                            dispatch({
+                                type: 'SET_SELECTED_ELEMENT',
+                                payload: {
+                                    id: obj.id,
+                                    props: {
+                                        type: obj.type, fill: obj.fill, stroke: obj.stroke,
+                                        strokeWidth: obj.strokeWidth, fontSize: obj.fontSize,
+                                        fontFamily: obj.fontFamily, text: obj.text,
+                                        opacity: obj.opacity ?? 1, backgroundColor: obj.backgroundColor
+                                    }
+                                }
+                            });
+                        }
                     });
-                    fabricCanvas.on('selection:cleared', (e: any) => {
-                        (e.deselected || []).forEach((obj: any) => {
-                            if (obj.isOriginalText && !obj.isEdited) {
-                                obj.set({ backgroundColor: 'rgba(0,0,0,0)' });
-                            }
-                        });
-                        fabricCanvas.renderAll();
+
+                    fabricCanvas.on('selection:cleared', () => {
                         dispatch({ type: 'SET_SELECTED_ELEMENT', payload: { id: null } });
                     });
 
@@ -357,66 +415,38 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
             }
         };
 
-
         initPage();
 
         return () => {
-            if (renderTask) {
-                renderTask.cancel();
-            }
+            isCancelled = true;
             if (fabricCanvasRegistry[pageNum]) {
                 delete fabricCanvasRegistry[pageNum];
             }
         };
-    }, [pdfDoc, bgPdfDoc, pageNum, scale, dispatch]);
+    }, [pdfDoc, pageNum, scale, dispatch]);
 
-    // Track Canvas Changes for History & Snap to Grid
+    // Track Canvas Changes for History
     useEffect(() => {
         const fCanvas = fabricCanvasRef.current;
         if (!fCanvas) return;
 
-        const GRID_SIZE = 20;
-
-        const handleMoving = (opt: any) => {
-            // Snap to Grid functionality
-            if (opt.target) {
-                opt.target.set({
-                    left: Math.round(opt.target.left / GRID_SIZE) * GRID_SIZE,
-                    top: Math.round(opt.target.top / GRID_SIZE) * GRID_SIZE
-                });
-            }
-        };
-
         const handleCanvasChange = (opt: any) => {
             if (isHistoryOperation.current) return;
-
-            // Ensure any new object has an ID before saving history
             if (opt && opt.target && !opt.target.id) {
                 opt.target.set({ id: Math.random().toString(36).substr(2, 9) });
             }
-
-            // Debounce or dispatch immediately
-            const json = fCanvas.toJSON(['id', 'isPdfForm', 'formType', 'isRedaction', 'isOriginalText', 'isOriginalTextCover', 'originalStr', 'isEdited']);
-            dispatch({
-                type: 'SAVE_HISTORY',
-                payload: { pageNum, json }
-            });
+            const json = fCanvas.toJSON(CUSTOM_PROPS);
+            dispatch({ type: 'SAVE_HISTORY', payload: { pageNum, json } });
         };
 
-        // We use mouse:up instead of object:added/modified directly to prevent 
-        // intermediate states (like drawing paths) from spamming history.
-        // Actually object:modified fires on mouse up after transform, but 
-        // path:created is specific to drawing. Let's use standard events safely.
         fCanvas.on('object:modified', handleCanvasChange);
         fCanvas.on('object:added', handleCanvasChange);
         fCanvas.on('object:removed', handleCanvasChange);
-        fCanvas.on('object:moving', handleMoving);
 
         return () => {
             fCanvas.off('object:modified', handleCanvasChange);
             fCanvas.off('object:added', handleCanvasChange);
             fCanvas.off('object:removed', handleCanvasChange);
-            fCanvas.off('object:moving', handleMoving);
         };
     }, [dispatch, pageNum]);
 
@@ -425,7 +455,6 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
         const fCanvas = fabricCanvasRef.current;
         if (!fCanvas) return;
 
-        // Find the state for THIS page at or before the given historyIndex
         let targetState = null;
         for (let i = historyIndex; i >= 0; i--) {
             if (history[i] && history[i].pageNum === pageNum) {
@@ -438,7 +467,6 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
 
         const finishLoad = () => {
             fCanvas.requestRenderAll();
-            // allow next cycle to reset history flag so event listeners don't catch it
             setTimeout(() => { isHistoryOperation.current = false; }, 0);
         };
 
@@ -457,14 +485,8 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
         const fCanvas = fabricCanvasRef.current;
         if (!fCanvas) return;
 
-        // Reset modes
         fCanvas.isDrawingMode = false;
         fCanvas.selection = true;
-        fCanvas.defaultCursor = 'default';
-        fCanvas.forEachObject((obj: any) => {
-            obj.selectable = true;
-            obj.evented = true;
-        });
 
         switch (activeTool) {
             case 'pen':
@@ -484,18 +506,7 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                 fCanvas.freeDrawingBrush = new fabric.PencilBrush(fCanvas);
                 fCanvas.freeDrawingBrush.color = '#ffffff';
                 fCanvas.freeDrawingBrush.width = 20;
-                fCanvas.selection = true;
-                fCanvas.defaultCursor = 'crosshair';
                 break;
-            case 'add_text':
-            case 'rectangle':
-            case 'circle':
-            case 'image':
-            case 'signature':
-            case 'sticky_note':
-            case 'form_text':
-            case 'form_checkbox':
-            case 'form_radio':
             default:
                 break;
         }
@@ -507,7 +518,6 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
             const fCanvas = fabricCanvasRef.current;
             if (!fCanvas) return;
 
-            // Only proceed if not editing an IText/Textbox
             const activeObject = fCanvas.getActiveObject();
             if (activeObject && activeObject.isEditing) return;
 
@@ -523,39 +533,26 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                                 width: obj.width * (obj.scaleX || 1),
                                 height: obj.height * (obj.scaleY || 1),
                                 fill: '#ffffff',
-                                stroke: 'none',
                                 selectable: false,
                                 evented: false,
-                                id: `cover_${Math.random().toString(36).substr(2, 9)}`,
                             });
-                            (cover as any).isOriginalTextCover = true;
                             fCanvas.add(cover);
                         } else if (obj.isOriginalImage) {
-                            // White cover hides original image in the rendered background
                             const cover = new fabric.Rect({
-                                left: obj.originalLeft ?? obj.left,
-                                top: obj.originalTop ?? obj.top,
-                                width: obj.originalWidth ?? (obj.width * (obj.scaleX || 1)),
-                                height: obj.originalHeight ?? (obj.height * (obj.scaleY || 1)),
+                                left: obj.originalLeft,
+                                top: obj.originalTop,
+                                width: obj.originalWidth,
+                                height: obj.originalHeight,
                                 fill: '#ffffff',
-                                stroke: 'none',
                                 selectable: false,
                                 evented: false,
-                                id: `imgcover_${Math.random().toString(36).substr(2, 9)}`,
                             });
-                            (cover as any).isOriginalImageCover = true;
                             fCanvas.add(cover);
                             cover.sendToBack();
                         }
                         fCanvas.remove(obj);
                     });
                     fCanvas.requestRenderAll();
-
-                    const json = fCanvas.toJSON(CUSTOM_PROPS);
-                    dispatch({
-                        type: 'SAVE_HISTORY',
-                        payload: { pageNum, json }
-                    });
                 }
             }
         };
@@ -564,68 +561,12 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [dispatch, pageNum]);
 
-    // Handle clicks and drags based on tools
+    // Handle clicks for tools
     useEffect(() => {
         const fCanvas = fabricCanvasRef.current;
         if (!fCanvas) return;
 
-
         const handleMouseDown = (opt: any) => {
-            if (activeTool === 'eraser' && opt.target) {
-                const erasedObj = opt.target;
-
-                // If erasing a PDF text or image object, leave a white cover behind
-                if ((erasedObj as any).isOriginalText) {
-                    const cover = new fabric.Rect({
-                        left: erasedObj.left,
-                        top: erasedObj.top,
-                        width: erasedObj.width * (erasedObj.scaleX || 1),
-                        height: erasedObj.height * (erasedObj.scaleY || 1),
-                        fill: '#ffffff',
-                        stroke: 'none',
-                        selectable: false,
-                        evented: false,
-                        id: `cover_${Math.random().toString(36).substr(2, 9)}`,
-                    });
-                    (cover as any).isOriginalTextCover = true;
-                    fCanvas.add(cover);
-                } else if ((erasedObj as any).isOriginalImage) {
-                    const cover = new fabric.Rect({
-                        left: erasedObj.originalLeft ?? erasedObj.left,
-                        top: erasedObj.originalTop ?? erasedObj.top,
-                        width: erasedObj.originalWidth ?? (erasedObj.width * (erasedObj.scaleX || 1)),
-                        height: erasedObj.originalHeight ?? (erasedObj.height * (erasedObj.scaleY || 1)),
-                        fill: '#ffffff',
-                        stroke: 'none',
-                        selectable: false,
-                        evented: false,
-                        id: `imgcover_${Math.random().toString(36).substr(2, 9)}`,
-                    });
-                    (cover as any).isOriginalImageCover = true;
-                    fCanvas.add(cover);
-                    cover.sendToBack();
-                }
-
-                // Remove from multiple selection if it was part of one
-                const activeObjects = fCanvas.getActiveObjects();
-                if (activeObjects.includes(erasedObj)) {
-                    fCanvas.discardActiveObject();
-                }
-                fCanvas.remove(erasedObj);
-
-                // Trigger history save
-                const json = fCanvas.toJSON(['id', 'isPdfForm', 'formType', 'isRedaction', 'isOriginalText', 'isOriginalTextCover', 'originalStr', 'isEdited']);
-                dispatch({
-                    type: 'SAVE_HISTORY',
-                    payload: { pageNum, json }
-                });
-
-                // Stop the freehand path from starting if we explicitly clicked an object
-                fCanvas.isDrawingMode = false;
-                setTimeout(() => { if (activeTool === 'eraser') fCanvas.isDrawingMode = true; }, 100);
-                return;
-            }
-
             if (activeTool === 'add_text' && !opt.target) {
                 const pointer = fCanvas.getPointer(opt.e);
                 const iText = new fabric.IText('Text', {
@@ -640,7 +581,7 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                 fCanvas.setActiveObject(iText);
                 iText.enterEditing();
                 iText.selectAll();
-                dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' }); // Revert after placement
+                dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' });
             } else if (activeTool === 'rectangle' && !opt.target) {
                 const pointer = fCanvas.getPointer(opt.e);
                 const rect = new fabric.Rect({
@@ -656,27 +597,13 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                 fCanvas.add(rect);
                 fCanvas.setActiveObject(rect);
                 dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' });
-            } else if (activeTool === 'circle' && !opt.target) {
-                const pointer = fCanvas.getPointer(opt.e);
-                const circle = new fabric.Circle({
-                    left: pointer.x,
-                    top: pointer.y,
-                    fill: 'transparent',
-                    stroke: '#0000ff',
-                    strokeWidth: 2,
-                    radius: 40,
-                    id: Math.random().toString(36).substr(2, 9),
-                });
-                fCanvas.add(circle);
-                fCanvas.setActiveObject(circle);
-                dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' });
-            } else if ((activeTool === 'image' || activeTool === 'signature') && !opt.target) {
+            } else if (activeTool === 'image' && !opt.target) {
                 const pointer = fCanvas.getPointer(opt.e);
                 const input = document.createElement('input');
                 input.type = 'file';
                 input.accept = 'image/*';
                 input.onchange = (e: any) => {
-                    const file = e.target.files[0];
+                    const file = e.target.files?.[0];
                     if (!file) return;
                     const reader = new FileReader();
                     reader.onload = (f) => {
@@ -687,7 +614,7 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                                 top: pointer.y,
                                 id: Math.random().toString(36).substr(2, 9),
                             });
-                            img.scaleToWidth(activeTool === 'signature' ? 150 : 250);
+                            img.scaleToWidth(250);
                             fCanvas.add(img);
                             fCanvas.setActiveObject(img);
                             dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' });
@@ -696,113 +623,14 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                     reader.readAsDataURL(file);
                 };
                 input.click();
-            } else if (activeTool === 'sticky_note' && !opt.target) {
-                const pointer = fCanvas.getPointer(opt.e);
-                const stickyNote = new fabric.Textbox('Add note...', {
-                    left: pointer.x,
-                    top: pointer.y,
-                    width: 150,
-                    fontSize: 16,
-                    fontFamily: 'sans-serif',
-                    fill: '#000000',
-                    backgroundColor: '#fcf6bd',
-                    padding: 10,
-                    borderColor: '#d4af37',
-                    cornerColor: '#d4af37',
-                    cornerSize: 8,
-                    transparentCorners: false,
-                    id: Math.random().toString(36).substr(2, 9),
-                });
-                fCanvas.add(stickyNote);
-                fCanvas.setActiveObject(stickyNote);
-                stickyNote.enterEditing();
-                stickyNote.selectAll();
-                dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' });
-            } else if (activeTool === 'form_text' && !opt.target) {
-                const pointer = fCanvas.getPointer(opt.e);
-                const rect = new fabric.Rect({
-                    left: pointer.x,
-                    top: pointer.y,
-                    fill: 'rgba(173, 216, 230, 0.4)',
-                    stroke: '#3b82f6',
-                    strokeWidth: 1,
-                    width: 150,
-                    height: 30,
-                    id: Math.random().toString(36).substr(2, 9),
-                });
-                // Custom properties to identify during export
-                rect.set('isPdfForm', true);
-                rect.set('formType', 'text');
-                fCanvas.add(rect);
-                fCanvas.setActiveObject(rect);
-                dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' });
-            } else if (activeTool === 'form_checkbox' && !opt.target) {
-                const pointer = fCanvas.getPointer(opt.e);
-                const rect = new fabric.Rect({
-                    left: pointer.x,
-                    top: pointer.y,
-                    fill: 'rgba(173, 216, 230, 0.4)',
-                    stroke: '#3b82f6',
-                    strokeWidth: 1,
-                    width: 20,
-                    height: 20,
-                    id: Math.random().toString(36).substr(2, 9),
-                });
-                rect.set('isPdfForm', true);
-                rect.set('formType', 'checkbox');
-                fCanvas.add(rect);
-                fCanvas.setActiveObject(rect);
-                dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' });
-            } else if (activeTool === 'form_radio' && !opt.target) {
-                const pointer = fCanvas.getPointer(opt.e);
-                const circle = new fabric.Circle({
-                    left: pointer.x,
-                    top: pointer.y,
-                    fill: 'rgba(173, 216, 230, 0.4)',
-                    stroke: '#3b82f6',
-                    strokeWidth: 1,
-                    radius: 10,
-                    id: Math.random().toString(36).substr(2, 9),
-                });
-                circle.set('isPdfForm', true);
-                circle.set('formType', 'radio');
-                fCanvas.add(circle);
-                fCanvas.setActiveObject(circle);
-                dispatch({ type: 'SET_ACTIVE_TOOL', payload: 'select' });
-            }
-        };
-
-        const handleMouseMove = () => {
-        };
-
-        const handleMouseUp = () => {
-        };
-
-        const handlePathCreated = (e: any) => {
-            if (activeTool === 'eraser') {
-                const path = e.path;
-                path.set({
-                    id: Math.random().toString(36).substr(2, 9),
-                    isRedaction: true,
-                });
-                // History is automatically saved via object:added listener
             }
         };
 
         fCanvas.on('mouse:down', handleMouseDown);
-        fCanvas.on('mouse:move', handleMouseMove);
-        fCanvas.on('mouse:up', handleMouseUp);
-        fCanvas.on('path:created', handlePathCreated);
+        return () => fCanvas.off('mouse:down', handleMouseDown);
+    }, [activeTool, dispatch]);
 
-        return () => {
-            fCanvas.off('mouse:down', handleMouseDown);
-            fCanvas.off('mouse:move', handleMouseMove);
-            fCanvas.off('mouse:up', handleMouseUp);
-            fCanvas.off('path:created', handlePathCreated);
-        };
-    }, [activeTool, dispatch, pageNum]);
-
-    // Listen for global property changes
+    // Handle global property updates
     useEffect(() => {
         const fCanvas = fabricCanvasRef.current;
         if (!fCanvas || !selectedElementId || !selectedElementProps) return;
@@ -816,9 +644,7 @@ export const PdfPageRenderer: React.FC<PdfPageRendererProps> = ({
                     changed = true;
                 }
             });
-            if (changed) {
-                fCanvas.requestRenderAll();
-            }
+            if (changed) fCanvas.requestRenderAll();
         }
     }, [selectedElementProps, selectedElementId]);
 

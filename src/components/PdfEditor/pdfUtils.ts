@@ -1,12 +1,26 @@
-import { rgb, PDFDocument, StandardFonts, PDFPage } from 'pdf-lib';
+import { rgb, PDFDocument, StandardFonts, PDFPage, Color, ColorTypes } from 'pdf-lib';
 // State types imported as needed from PdfEditorState
-
 
 // We put fabric in an ambient declaration since it's from CDN
 declare var fabric: any;
 
 // Global registry to hold fabric canvases for each page
 export const fabricCanvasRegistry: Record<number, any> = {};
+
+// Helper to convert hex to pdf-lib RGB
+const hexToRgb = (hex: string): Color => {
+    if (!hex || hex === 'transparent') return rgb(0, 0, 0);
+    if (hex.startsWith('rgb')) {
+        const matches = hex.match(/\d+/g);
+        if (matches && matches.length >= 3) {
+            return rgb(parseInt(matches[0]) / 255, parseInt(matches[1]) / 255, parseInt(matches[2]) / 255);
+        }
+    }
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    return rgb(r, g, b);
+};
 
 export const createBlankPdf = async (): Promise<ArrayBuffer> => {
     const pdfDoc = await PDFDocument.create();
@@ -49,8 +63,6 @@ export const duplicatePageInPdf = async (file: File, pageIndex: number): Promise
 };
 
 export const saveEditedPdf = async (file: File, password?: string): Promise<{ pdfBytes: Uint8Array, base64Pngs: string[], metadata: any }> => {
-    // Read file once into a Uint8Array – make separate copies for each consumer
-    // to avoid "detached ArrayBuffer" errors when mupdf transfers ownership.
     const originalBytes = new Uint8Array(await file.arrayBuffer());
     let arrayBuffer: ArrayBuffer = originalBytes.buffer as ArrayBuffer;
 
@@ -66,20 +78,18 @@ export const saveEditedPdf = async (file: File, password?: string): Promise<{ pd
         if (fCanvas) {
             const page = pdfDoc.getPage(i - 1);
             const { width: pWidth, height: pHeight } = page.getSize();
-            const rawObjs = fCanvas.getObjects();
-            const redactionBounds: any[] = [];
-
-            // STRATEGY: Full Page Reconstruction (No background)
-            const objects = fCanvas.getObjects();
             
-            // 1. Draw a white background covering the original page content completely
+            // 1. Draw a white background covering original content
             page.drawRectangle({
                 x: 0, y: 0, width: pWidth, height: pHeight,
                 color: rgb(1, 1, 1)
             });
 
-            // 2. Draw all decomposed objects onto the page
+            const objects = fCanvas.getObjects();
             for (const obj of objects) {
+                // Skip internal covers or redactions if they are just visual aids
+                if (obj.isOriginalTextCover || obj.isOriginalImageCover) continue;
+
                 const width = obj.width * (obj.scaleX || 1);
                 const height = obj.height * (obj.scaleY || 1);
                 const x = obj.left;
@@ -87,37 +97,84 @@ export const saveEditedPdf = async (file: File, password?: string): Promise<{ pd
 
                 if (obj.type === 'i-text' || obj.type === 'textbox' || obj.type === 'text') {
                     const fontSize = (obj.fontSize || 12) * (obj.scaleY || 1);
+                    const textColor = hexToRgb(obj.fill || '#000000');
                     try {
                         page.drawText(obj.text, {
                             x: obj.left,
                             y: pHeight - obj.top - fontSize,
                             size: fontSize,
                             font: standardFont,
-                            color: rgb(0, 0, 0), // Default to black for now
+                            color: textColor,
+                            opacity: obj.opacity ?? 1,
                         });
                     } catch (e) { }
                 } 
                 else if (obj.type === 'image') {
                     try {
-                        const dataUrl = obj.toDataURL();
+                        // For images, we take the current visual state from Fabric
+                        const dataUrl = obj.toDataURL({
+                            format: 'png',
+                            quality: 1,
+                        });
                         const img = await pdfDoc.embedPng(dataUrl);
-                        page.drawImage(img, { x, y, width, height });
+                        
+                        // Fabric's toDataURL includes rotation and flips if called on the object
+                        // But wait, obj.toDataURL() on an image object in Fabric gives the CROPPED/TRANSFORMED image data
+                        // So we can draw it flat.
+                        page.drawImage(img, {
+                            x: obj.left,
+                            y: pHeight - obj.top - height,
+                            width: width,
+                            height: height,
+                            opacity: obj.opacity ?? 1,
+                        });
                     } catch (e) { }
                 }
                 else if (obj.type === 'rect') {
                     try {
                         page.drawRectangle({
                             x, y, width, height,
-                            color: rgb(0.8, 0.8, 0.8), // Placeholder for color extraction
-                            borderColor: rgb(0, 0, 0),
+                            color: obj.fill && obj.fill !== 'transparent' ? hexToRgb(obj.fill) : undefined,
+                            borderColor: obj.stroke ? hexToRgb(obj.stroke) : undefined,
                             borderWidth: obj.strokeWidth || 0,
+                            opacity: obj.opacity ?? 1,
+                            borderOpacity: obj.opacity ?? 1,
+                        });
+                    } catch (e) { }
+                }
+                else if (obj.type === 'circle') {
+                    try {
+                        const radius = (obj.radius || 0) * (obj.scaleX || 1);
+                        page.drawCircle({
+                            x: obj.left + radius,
+                            y: pHeight - obj.top - radius,
+                            size: radius,
+                            color: obj.fill && obj.fill !== 'transparent' ? hexToRgb(obj.fill) : undefined,
+                            borderColor: obj.stroke ? hexToRgb(obj.stroke) : undefined,
+                            borderWidth: obj.strokeWidth || 0,
+                            opacity: obj.opacity ?? 1,
+                            borderOpacity: obj.opacity ?? 1,
+                        });
+                    } catch (e) { }
+                }
+                else if (obj.type === 'path') {
+                    // Primitive path support (e.g. for pen/highlighter)
+                    // This is harder since we'd need to parse SVG paths. 
+                    // As a shortcut, we can render the object to a small PNG and draw as image.
+                    try {
+                        const dataUrl = obj.toDataURL();
+                        const img = await pdfDoc.embedPng(dataUrl);
+                        page.drawImage(img, {
+                            x: obj.left,
+                            y: pHeight - obj.top - height,
+                            width, height,
+                            opacity: obj.opacity ?? 1,
                         });
                     } catch (e) { }
                 }
             }
 
             base64Pngs.push(fCanvas.toDataURL());
-
         }
     }
 
@@ -162,18 +219,12 @@ async function applyInvisibleLayer(pdfDoc: any, page: any, rawObjs: any[], redac
     const form = pdfDoc.getForm();
 
     for (const obj of rawObjs) {
-        if (obj.isRedaction || obj.isOriginalTextCover || obj.isOriginalImage || obj.isOriginalImageCover) continue;
+        if (obj.isRedaction || obj.isOriginalTextCover || obj.isOriginalImageCover) continue;
 
         const width = obj.width * (obj.scaleX || 1);
         const height = obj.height * (obj.scaleY || 1);
         const x = obj.left;
         const y = pHeight - obj.top - height;
-
-        const isRedacted = redactionBounds.some(rect => {
-            return (x < rect.left + rect.width && x + width > rect.left && obj.top < rect.top + rect.height && obj.top + height > rect.top);
-        });
-
-        if (isRedacted) continue;
 
         // 1. Invisible Search Layer (Original and User text)
         const isText = obj.isOriginalText || obj.type === 'i-text' || obj.type === 'textbox' || obj.type === 'text';
@@ -185,7 +236,7 @@ async function applyInvisibleLayer(pdfDoc: any, page: any, rawObjs: any[], redac
                     y: pHeight - obj.top - fontSize,
                     size: fontSize,
                     font: standardFont,
-                    opacity: 0, // ALWAYS invisible, visuals provided by original vector or transparent overlay
+                    opacity: 0,
                 });
             } catch (e) { }
         }
@@ -205,5 +256,3 @@ async function applyInvisibleLayer(pdfDoc: any, page: any, rawObjs: any[], redac
         }
     }
 }
-
-
