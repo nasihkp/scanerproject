@@ -47,7 +47,6 @@ export interface ScannedDoc {
   date: string;
   text?: string; // OCR content
   driveId?: string; // Google Drive File ID
-  driveId?: string; // Google Drive File ID
   name?: string;
   category?: string; // AI Classification
 }

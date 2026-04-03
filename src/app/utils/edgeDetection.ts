@@ -49,7 +49,6 @@ export async function detectDocumentEdges(imageSrc: string): Promise<RectCrop | 
             // For this "V1" we will try to find the bounding box of non-uniform regions.
 
             // Better heuristic: Sobel Edge Detection
-            const sobelData = new Float32Array(w * h);
             const grayscale = new Uint8Array(w * h);
 
             for (let i = 0; i < data.length; i += 4) {

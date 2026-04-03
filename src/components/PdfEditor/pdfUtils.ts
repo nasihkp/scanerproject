@@ -1,4 +1,4 @@
-import { rgb, PDFDocument, StandardFonts, PDFPage, Color, ColorTypes } from 'pdf-lib';
+import { rgb, PDFDocument, StandardFonts, Color } from 'pdf-lib';
 // State types imported as needed from PdfEditorState
 
 // We put fabric in an ambient declaration since it's from CDN
@@ -159,8 +159,6 @@ export const saveEditedPdf = async (file: File, password?: string): Promise<{ pd
                 }
                 else if (obj.type === 'path') {
                     // Primitive path support (e.g. for pen/highlighter)
-                    // This is harder since we'd need to parse SVG paths. 
-                    // As a shortcut, we can render the object to a small PNG and draw as image.
                     try {
                         const dataUrl = obj.toDataURL();
                         const img = await pdfDoc.embedPng(dataUrl);
@@ -194,65 +192,4 @@ export const saveEditedPdf = async (file: File, password?: string): Promise<{ pd
     return { pdfBytes, base64Pngs, metadata };
 };
 
-async function generateNoiseImage(pdfDoc: any, width: number, height: number) {
-    const w = Math.max(1, Math.floor(width));
-    const h = Math.max(1, Math.floor(height));
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d')!;
-    const imageData = ctx.createImageData(w, h);
-    for (let i = 0; i < imageData.data.length; i += 4) {
-        const val = Math.random() * 255;
-        imageData.data[i] = val;
-        imageData.data[i + 1] = val;
-        imageData.data[i + 2] = val;
-        imageData.data[i + 3] = 40;
-    }
-    ctx.putImageData(imageData, 0, 0);
-    return await pdfDoc.embedPng(canvas.toDataURL());
-}
-
-// Helper to apply invisible search layers and PDF form elements
-async function applyInvisibleLayer(pdfDoc: any, page: any, rawObjs: any[], redactionBounds: any[], pHeight: number) {
-    const standardFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    const form = pdfDoc.getForm();
-
-    for (const obj of rawObjs) {
-        if (obj.isRedaction || obj.isOriginalTextCover || obj.isOriginalImageCover) continue;
-
-        const width = obj.width * (obj.scaleX || 1);
-        const height = obj.height * (obj.scaleY || 1);
-        const x = obj.left;
-        const y = pHeight - obj.top - height;
-
-        // 1. Invisible Search Layer (Original and User text)
-        const isText = obj.isOriginalText || obj.type === 'i-text' || obj.type === 'textbox' || obj.type === 'text';
-        if (isText && obj.text && obj.text.trim().length > 0) {
-            const fontSize = (obj.fontSize || 12) * (obj.scaleY || 1);
-            try {
-                page.drawText(obj.text, {
-                    x: obj.left,
-                    y: pHeight - obj.top - fontSize,
-                    size: fontSize,
-                    font: standardFont,
-                    opacity: 0,
-                });
-            } catch (e) { }
-        }
-
-        // 2. Interactive Form Fields
-        if (obj.isPdfForm) {
-            const fieldName = `field_${Math.random().toString(36).substr(2, 5)}`;
-            try {
-                if (obj.formType === 'text') {
-                    const textField = form.createTextField(fieldName);
-                    textField.addToPage(page, { x, y, width, height });
-                } else if (obj.formType === 'checkbox') {
-                    const checkbox = form.createCheckBox(fieldName);
-                    checkbox.addToPage(page, { x, y, width, height });
-                }
-            } catch (e) { }
-        }
-    }
-}
+// Functions generateNoiseImage and applyInvisibleLayer were removed as they were unreferenced internal helpers.
